@@ -70,6 +70,11 @@ class GlobalSettings:
     stillness_window_frames: int = 10      # Fenster-Größe (frames) für Stillstands-Check
     stillness_min_duration_s: float = 1.0  # Min Dauer um als Stillstands-Phase zu zählen
 
+    # ---- Auto-Setting-Fallback ----
+    auto_fallback_seconds: float = 120.0   # Wenn nach X Sekunden Video keine Top-View
+                                            # gefunden wurde, naechstes Setting versuchen.
+                                            # 0 = Fallback aus, nur gewaehltes Setting nutzen.
+
     def to_dict(self) -> dict:
         return asdict(self)
 

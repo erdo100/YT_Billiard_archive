@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="de">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <title>yt::archive — carambol tracking</title>
@@ -12,13 +12,12 @@
     <nav class="nav">
         <button class="nav-btn active" data-view="browse">browse</button>
         <button class="nav-btn" data-view="queue">queue</button>
-        <button class="nav-btn" data-view="history">archiv</button>
+        <button class="nav-btn" data-view="history">archive</button>
         <button class="nav-btn" data-view="setup">setup</button>
     </nav>
     <div class="topbar-actions">
-        <button id="btn-rescan" title="lokalen download-ordner neu scannen">↻ rescan</button>
-        <button id="btn-global" title="tracking-parameter">⚙ global</button>
-        <button id="btn-config" title="download-ordner">⚙ config</button>
+        <button id="btn-rescan" title="rescan local download folder">↻ rescan</button>
+        <button id="btn-settings" title="settings">⚙ settings</button>
     </div>
 </header>
 
@@ -27,51 +26,55 @@
 <!-- ============= BROWSE ============= -->
 <section class="view active" id="view-browse">
     <div class="channel-bar">
-        <input type="text" id="channel-input" placeholder="@pbatv  oder  https://youtube.com/@kanal/videos">
-        <button id="btn-load-channel">kanal laden</button>
+        <input type="text" id="channel-input" placeholder="@pbatv  or  https://youtube.com/@channel/videos">
+        <button id="btn-load-channel">load channel</button>
     </div>
     <div class="channel-bar">
-        <input type="text" id="single-url-input" placeholder="oder einzelne video-url einfuegen (z.B. https://youtu.be/dQw4w9WgXcQ)">
+        <input type="text" id="single-url-input" placeholder="or paste a single video url (e.g. https://youtu.be/dQw4w9WgXcQ)">
         <button id="btn-add-single">+ video</button>
+    </div>
+    <div class="channel-bar">
+        <input type="text" id="local-path-input" placeholder="or local file path (e.g. C:\Videos\game.mp4)">
+        <button id="btn-import-local">+ import</button>
     </div>
     <div id="channel-info" class="muted"></div>
     <div class="video-toolbar">
-        <button id="btn-select-all" class="small">alle</button>
-        <button id="btn-select-none" class="small">keine</button>
-        <span class="muted" id="selection-count">0 ausgewaehlt</span>
+        <button id="btn-select-all" class="small">all</button>
+        <button id="btn-select-none" class="small">none</button>
+        <span class="muted" id="selection-count">0 selected</span>
         <span class="spacer"></span>
         <button id="btn-download-selected" class="primary">↓ download</button>
     </div>
     <div id="video-list" class="video-list"></div>
     <div class="muted small" id="channel-paging" style="text-align:center; margin-top:12px;">
-        <button id="btn-load-more" class="small hidden">mehr laden (naechste 30)</button>
+        <button id="btn-load-more" class="small hidden">load more (next 30)</button>
     </div>
 </section>
 
 <!-- ============= QUEUE ============= -->
 <section class="view" id="view-queue">
     <div class="section-header">
-        <h2>download-queue</h2>
-        <button id="btn-clear-done" class="small">erledigte entfernen</button>
+        <h2>download queue</h2>
+        <button id="btn-clear-done" class="small">remove finished</button>
     </div>
     <div id="queue-list" class="queue-list"></div>
-    <div class="muted" id="queue-empty">queue ist leer</div>
+    <div class="muted" id="queue-empty">queue is empty</div>
 </section>
 
-<!-- ============= ARCHIV (history) ============= -->
+<!-- ============= ARCHIVE (history) ============= -->
 <section class="view" id="view-history">
     <div class="section-header">
-        <h2>archiv — lokal gefundene videos</h2>
+        <h2>archive — local videos</h2>
     </div>
 
-    <!-- Live-Tracking-Panel: oberhalb der Liste, wird NICHT durch loadHistory zerstoert.
-         Wird vom statusPolling separat gefuellt. -->
+    <!-- Live tracking panel: above the list; not rebuilt by loadHistory.
+         Populated independently by status polling. -->
     <div id="live-tracking-panel" class="live-tracking-panel hidden">
         <div class="ltp-header">
             <strong id="ltp-title">tracking…</strong>
             <span class="muted small" id="ltp-status"></span>
             <span class="spacer"></span>
-            <button id="btn-cancel-tracking" class="small danger hidden">abbrechen</button>
+            <button id="btn-cancel-tracking" class="small danger hidden">cancel</button>
         </div>
         <div class="ltp-body">
             <img id="ltp-preview" alt="" class="ltp-preview">
@@ -84,43 +87,41 @@
     </div>
 
     <div id="history-list" class="history-list"></div>
-    <div class="muted" id="history-empty">noch nichts im archiv</div>
+    <div class="muted" id="history-empty">archive empty</div>
 </section>
 
 <!-- ============= SETUP ============= -->
 <section class="view view-wide" id="view-setup">
     <div class="setup-layout">
 
-        <!-- Sidebar: Settings-Liste -->
         <aside class="setup-sidebar">
             <div class="sidebar-header">
                 <h3>settings</h3>
-                <button id="btn-new-setting" class="small primary">+ neu</button>
+                <button id="btn-new-setting" class="small primary">+ new</button>
             </div>
             <ul id="setting-list" class="setting-list"></ul>
         </aside>
 
-        <!-- Main: Editor -->
         <div class="setup-main">
 
             <div id="setup-editor" class="setup-editor hidden">
 
                 <div class="setup-toolbar">
                     <label class="setup-name-label">name:</label>
-                    <input type="text" id="setting-name" placeholder="name fuer das setting">
+                    <input type="text" id="setting-name" placeholder="setting name">
                     <span class="spacer"></span>
-                    <button id="btn-delete-setting" class="danger">loeschen</button>
-                    <button id="btn-save-setting" class="primary">speichern</button>
+                    <button id="btn-delete-setting" class="danger">delete</button>
+                    <button id="btn-save-setting" class="primary">save</button>
                 </div>
 
                 <div class="setup-body">
 
-                    <!-- Links: Video + Canvas -->
+                    <!-- Left: Video + Canvas -->
                     <div class="setup-left">
                         <div class="setup-video-pick">
-                            <label>referenz-video:</label>
+                            <label>reference video:</label>
                             <select id="setup-video-select">
-                                <option value="">— waehlen —</option>
+                                <option value="">— choose —</option>
                             </select>
                         </div>
 
@@ -128,110 +129,110 @@
                             <video id="setup-video" controls preload="metadata"></video>
                         </div>
 
-                        <!-- Live tracking direkt unter dem Video, gut sichtbar -->
+                        <!-- Live tracking preview right below the video -->
                         <div class="live-preview-section">
                             <div class="live-preview-header">
-                                <h3 class="param-section-title" style="margin:0">live tracking-vorschau</h3>
+                                <h3 class="param-section-title" style="margin:0">live tracking preview</h3>
                                 <span class="spacer"></span>
-                                <span class="live-status muted small" id="live-status-text">inaktiv</span>
+                                <span class="live-status muted small" id="live-status-text">inactive</span>
                                 <div class="frame-step-controls">
-                                    <button class="small" id="btn-frame-prev" title="ein frame zurueck (←)">← frame</button>
-                                    <button class="small" id="btn-frame-next" title="ein frame weiter (→)">frame →</button>
+                                    <button class="small" id="btn-frame-prev" title="step back one frame (←)">← frame</button>
+                                    <button class="small" id="btn-frame-next" title="step forward one frame (→)">frame →</button>
                                 </div>
-                                <button class="small" id="btn-trail-reset" title="trail-linien loeschen">trail leeren</button>
+                                <button class="small" id="btn-trail-reset" title="clear trail lines">clear trail</button>
                             </div>
                             <div class="live-preview-wrap">
                                 <canvas id="live-canvas"></canvas>
                                 <div id="live-placeholder" class="live-placeholder muted small">
-                                    erst tisch-ecken UND ball-farben setzen, dann erscheint hier die rektifizierte top-down-ansicht mit ball-erkennung
+                                    set table corners AND ball colors first, then the rectified top-down view with ball detection appears here
                                 </div>
                             </div>
                             <div class="live-stats muted small" id="live-stats"></div>
                         </div>
 
                         <div class="setup-canvas-toolbar">
-                            <button id="btn-grab-frame">frame greifen</button>
+                            <button id="btn-grab-frame">grab frame</button>
                             <span class="muted small" id="grab-frame-info"></span>
                             <span class="spacer"></span>
                             <div class="zoom-controls">
-                                <button class="small" id="btn-zoom-out" title="raus zoomen">−</button>
-                                <button class="small" id="btn-zoom-fit" title="ins fenster einpassen">fit</button>
+                                <button class="small" id="btn-zoom-out" title="zoom out">−</button>
+                                <button class="small" id="btn-zoom-fit" title="fit to window">fit</button>
                                 <button class="small" id="btn-zoom-100" title="100% zoom">1:1</button>
-                                <button class="small" id="btn-zoom-in" title="rein zoomen">+</button>
+                                <button class="small" id="btn-zoom-in" title="zoom in">+</button>
                                 <span class="muted small" id="zoom-level">100%</span>
                             </div>
                         </div>
 
                         <div class="setup-mode-bar">
-                            <button class="mode-btn active" data-mode="none">betrachten</button>
-                            <button class="mode-btn" data-mode="corners">tisch-ecken setzen (4 klicks)</button>
-                            <button class="mode-btn" data-mode="balls">ball-farben setzen (3 klicks)</button>
-                            <button class="mode-btn danger" id="btn-reset-clicks">alles zuruecksetzen</button>
+                            <button class="mode-btn active" data-mode="none">view</button>
+                            <button class="mode-btn" data-mode="corners">set table corners (4 clicks)</button>
+                            <button class="mode-btn" data-mode="balls">set ball colors (3 clicks)</button>
+                            <button class="mode-btn danger" id="btn-reset-clicks">reset all</button>
                         </div>
 
                         <div class="setup-canvas-wrap">
                             <canvas id="setup-canvas"></canvas>
-                            <div class="muted" id="setup-canvas-hint">erst „frame greifen" druecken</div>
+                            <div class="muted" id="setup-canvas-hint">click „grab frame" first</div>
                         </div>
 
                         <div class="setup-status">
-                            <span id="status-corners">ecken: 0/4</span>
-                            <span id="status-balls">ball-farben: 0/3</span>
+                            <span id="status-corners">corners: 0/4</span>
+                            <span id="status-balls">ball colors: 0/3</span>
                         </div>
                     </div>
 
-                    <!-- Rechts: Felder -->
+                    <!-- Right: Fields -->
                     <div class="setup-right">
 
                         <div class="param-section">
-                            <h3 class="param-section-title">filz (tischtuch)</h3>
+                            <h3 class="param-section-title">felt (cloth)</h3>
                             <div class="param-grid">
                                 <div class="param">
-                                    <label class="param-label">filz-farbe (hex)</label>
+                                    <label class="param-label">felt color (hex)</label>
                                     <div class="param-color-row">
                                         <input type="text" id="setting-felt-hex" placeholder="#1c5f3a" style="flex:1">
                                         <input type="color" id="setting-felt-picker">
                                     </div>
                                 </div>
                                 <div class="param">
-                                    <label class="param-label">filz-toleranz (BGR)</label>
+                                    <label class="param-label">felt tolerance (BGR)</label>
                                     <input type="number" id="setting-felt-tol" min="1" max="200" step="1" value="40">
                                 </div>
                             </div>
-                            <p class="muted small">wird automatisch aus dem polygon-zentrum gesampelt sobald 4 tisch-ecken gesetzt sind</p>
+                            <p class="muted small">sampled automatically from polygon center once 4 table corners are set</p>
                         </div>
 
                         <div class="param-section">
-                            <h3 class="param-section-title">ball-farben (carambol-standard)</h3>
+                            <h3 class="param-section-title">ball colors (carambol standard)</h3>
                             <div class="ball-color-row">
                                 <div class="ball-color">
-                                    <label class="param-label">1) weiss</label>
+                                    <label class="param-label">1) white</label>
                                     <div class="param-color-row">
                                         <input type="text" data-ballcolor="0" placeholder="#ffffff">
                                         <input type="color" data-ballpicker="0">
                                     </div>
                                 </div>
                                 <div class="ball-color">
-                                    <label class="param-label">2) gelb</label>
+                                    <label class="param-label">2) yellow</label>
                                     <div class="param-color-row">
                                         <input type="text" data-ballcolor="1" placeholder="#e6c648">
                                         <input type="color" data-ballpicker="1">
                                     </div>
                                 </div>
                                 <div class="ball-color">
-                                    <label class="param-label">3) rot</label>
+                                    <label class="param-label">3) red</label>
                                     <div class="param-color-row">
                                         <input type="text" data-ballcolor="2" placeholder="#c83030">
                                         <input type="color" data-ballpicker="2">
                                     </div>
                                 </div>
                             </div>
-                            <p class="muted small">im ball-modus auf die baelle klicken — reihenfolge: weiss, gelb, rot</p>
+                            <p class="muted small">in ball mode, click the balls — order: white, yellow, red</p>
                         </div>
 
                         <div class="param-section">
-                            <h3 class="param-section-title">tisch-ecken (lesbar)</h3>
-                            <div id="corners-readout" class="corners-readout muted small">noch nicht gesetzt</div>
+                            <h3 class="param-section-title">table corners (readout)</h3>
+                            <div id="corners-readout" class="corners-readout muted small">not set yet</div>
                         </div>
 
                     </div>
@@ -241,7 +242,7 @@
 
             <div id="setup-empty" class="empty-state">
                 <div class="empty-glyph">▱</div>
-                <p class="muted">links ein setting waehlen oder <strong>+ neu</strong> erstellen</p>
+                <p class="muted">choose a setting on the left or click <strong>+ new</strong></p>
             </div>
 
         </div>
@@ -252,10 +253,10 @@
 
 <!-- ============= MODALS ============= -->
 
-<!-- Tracken-Modal -->
+<!-- Tracking modal -->
 <div id="modal-track" class="modal hidden">
     <div class="modal-content">
-        <h3>video tracken</h3>
+        <h3>track video</h3>
         <p class="muted" id="track-video-name"></p>
         <div class="form-row">
             <label>setting:</label>
@@ -263,31 +264,55 @@
         </div>
         <p id="track-warning" class="muted small"></p>
         <div class="modal-actions">
-            <button class="cancel" data-close-modal="modal-track">abbrechen</button>
-            <button id="btn-track-start" class="primary">starten</button>
+            <button class="cancel" data-close-modal="modal-track">cancel</button>
+            <button id="btn-track-start" class="primary">start</button>
         </div>
     </div>
 </div>
 
-<!-- Global Settings Modal -->
-<div id="modal-global" class="modal hidden">
+<!-- Settings Modal (merged: general + tracking) -->
+<div id="modal-settings" class="modal hidden">
     <div class="modal-content wide">
-        <h3>globale tracking-parameter</h3>
+        <h3>settings</h3>
+
         <div class="param-grid">
-            <div class="param">
-                <label class="param-label">min clip frames <span class="param-help">clip wird verworfen wenn kuerzer</span></label>
-                <input type="number" data-gparam="min_clip_frames" min="1" step="1">
+            <div class="param" style="grid-column: 1 / -1;">
+                <strong style="color: var(--text);">general</strong>
+            </div>
+            <div class="param" style="grid-column: 1 / -1;">
+                <label class="param-label">download folder <span class="param-help">where YouTube downloads land</span></label>
+                <input type="text" id="config-download-dir" placeholder="C:\Users\xxx\Downloads\YouTube">
+            </div>
+
+            <div class="param" style="grid-column: 1 / -1; border-top: 1px solid var(--border); padding-top: 8px; margin-top: 8px;">
+                <strong style="color: var(--text);">tracking — pass 1 (scan)</strong>
             </div>
             <div class="param">
-                <label class="param-label">max gap frames <span class="param-help">tisch darf so viele frames weg sein, ohne dass der clip endet</span></label>
-                <input type="number" data-gparam="max_gap_frames" min="1" step="1">
-            </div>
-            <div class="param">
-                <label class="param-label">felt detect % <span class="param-help">9-punkt-quote ab der tisch als sichtbar gilt</span></label>
+                <label class="param-label">felt detect % <span class="param-help">9-point quota above which the table is „visible"</span></label>
                 <input type="number" data-gparam="felt_detect_pct" min="0" max="100" step="5">
             </div>
             <div class="param">
-                <label class="param-label">init min felt % <span class="param-help">pivot-frame braucht mind. so viel filz im bild</span></label>
+                <label class="param-label">scan sample interval (s) <span class="param-help">pass 1: check one frame every X seconds</span></label>
+                <input type="number" data-gparam="scan_sample_interval_s" min="0.5" step="0.5">
+            </div>
+            <div class="param">
+                <label class="param-label">max gap frames <span class="param-help">table may be gone for X frames without ending the range</span></label>
+                <input type="number" data-gparam="max_gap_frames" min="1" step="1">
+            </div>
+            <div class="param">
+                <label class="param-label">min clip frames <span class="param-help">range discarded if shorter (frames)</span></label>
+                <input type="number" data-gparam="min_clip_frames" min="1" step="1">
+            </div>
+            <div class="param">
+                <label class="param-label">preview interval (frames)</label>
+                <input type="number" data-gparam="preview_interval" min="1" step="1">
+            </div>
+
+            <div class="param" style="grid-column: 1 / -1; border-top: 1px solid var(--border); padding-top: 8px; margin-top: 8px;">
+                <strong style="color: var(--text);">tracking — pass 2 (init + ball tracking)</strong>
+            </div>
+            <div class="param">
+                <label class="param-label">init min felt % <span class="param-help">pivot frame needs at least this much felt</span></label>
                 <input type="number" data-gparam="init_min_felt_pct" min="0" max="100" step="5">
             </div>
             <div class="param">
@@ -295,19 +320,11 @@
                 <input type="number" data-gparam="init_sample_interval_s" min="0.1" step="0.1">
             </div>
             <div class="param">
-                <label class="param-label">preview interval (frames)</label>
-                <input type="number" data-gparam="preview_interval" min="1" step="1">
-            </div>
-            <div class="param">
-                <label class="param-label">scan sample interval (s) <span class="param-help">pass 1: alle X sek einen frame pruefen</span></label>
-                <input type="number" data-gparam="scan_sample_interval_s" min="0.5" step="0.5">
-            </div>
-            <div class="param">
-                <label class="param-label">v_max (m/s) <span class="param-help">max ballgeschwindigkeit → such-radius</span></label>
+                <label class="param-label">v_max (m/s) <span class="param-help">max ball speed → search radius</span></label>
                 <input type="number" data-gparam="v_max_mps" min="0.5" step="0.5">
             </div>
             <div class="param">
-                <label class="param-label">color adaptation rate <span class="param-help">0 = farbe nie anpassen, 0.5 = stark</span></label>
+                <label class="param-label">color adaptation rate <span class="param-help">0 = never adapt, 0.5 = aggressive</span></label>
                 <input type="number" data-gparam="color_adaptation_rate" min="0" max="1" step="0.05">
             </div>
             <div class="param">
@@ -320,60 +337,52 @@
             </div>
 
             <div class="param" style="grid-column: 1 / -1; border-top: 1px solid var(--border); padding-top: 8px; margin-top: 8px;">
-                <strong style="color: var(--text);">clip-splitting / stillstands-detektion</strong>
+                <strong style="color: var(--text);">clip splitting / stillness detection</strong>
             </div>
             <div class="param">
-                <label class="param-label">min clip-dauer (s) <span class="param-help">kuerzere clips werden verworfen</span></label>
+                <label class="param-label">min clip duration (s) <span class="param-help">shorter clips are discarded</span></label>
                 <input type="number" data-gparam="min_clip_duration_s" min="0" step="0.5">
             </div>
             <div class="param">
-                <label class="param-label">stillstand: max bewegung (px) <span class="param-help">ueber das fenster gemessen</span></label>
+                <label class="param-label">stillness: max movement (px) <span class="param-help">measured across the window</span></label>
                 <input type="number" data-gparam="stillness_max_window_px" min="0.5" step="0.5">
             </div>
             <div class="param">
-                <label class="param-label">stillstand: fenster (frames)</label>
+                <label class="param-label">stillness: window (frames)</label>
                 <input type="number" data-gparam="stillness_window_frames" min="3" step="1">
             </div>
             <div class="param">
-                <label class="param-label">stillstand: min dauer (s) <span class="param-help">so lang muessen baelle ruhen</span></label>
+                <label class="param-label">stillness: min duration (s) <span class="param-help">balls must be still that long</span></label>
                 <input type="number" data-gparam="stillness_min_duration_s" min="0.2" step="0.1">
             </div>
+            <div class="param">
+                <label class="param-label">auto-fallback (s) <span class="param-help">try next setting after X sec without top-view; 0 = off</span></label>
+                <input type="number" data-gparam="auto_fallback_seconds" min="0" step="10">
+            </div>
         </div>
+
         <div class="modal-actions">
-            <button class="cancel" data-close-modal="modal-global">abbrechen</button>
-            <button id="btn-save-global" class="primary">speichern</button>
+            <button class="cancel" data-close-modal="modal-settings">cancel</button>
+            <button id="btn-save-settings" class="primary">save</button>
         </div>
     </div>
 </div>
 
-<!-- Config Modal -->
-<div id="modal-config" class="modal hidden">
-    <div class="modal-content">
-        <h3>download-ordner</h3>
-        <div class="form-row">
-            <label>pfad:</label>
-            <input type="text" id="config-download-dir" placeholder="C:\Users\xxx\Downloads\YouTube">
-        </div>
-        <div class="modal-actions">
-            <button class="cancel" data-close-modal="modal-config">abbrechen</button>
-            <button id="btn-save-config" class="primary">speichern</button>
-        </div>
-    </div>
-</div>
-
-<!-- Player Modal — video oder clip -->
+<!-- Player Modal — video or clip -->
 <div id="modal-player" class="modal hidden">
     <div class="modal-content wide modal-player-content">
         <div class="modal-player-header">
             <h3 id="player-title" style="margin:0"></h3>
             <span class="spacer"></span>
-            <button id="player-prev" class="small" title="vorheriger clip">← prev</button>
-            <button id="player-next" class="small" title="naechster clip">next →</button>
-            <button class="cancel" data-close-modal="modal-player">schliessen</button>
+            <button id="player-prev" class="small" title="previous clip">← prev</button>
+            <button id="player-next" class="small" title="next clip">next →</button>
+            <button id="player-delete" class="small danger hidden" title="delete this clip">delete</button>
+            <button class="cancel" data-close-modal="modal-player">close</button>
         </div>
         <div class="modal-player-wrap">
             <video id="player-video" controls autoplay preload="metadata"></video>
         </div>
+        <div id="player-timeline" class="player-timeline hidden" title="click a clip range to preview"></div>
         <div class="muted small" id="player-caption"></div>
     </div>
 </div>

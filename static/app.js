@@ -18,6 +18,8 @@ const state = {
     pollTimer: null,
     previewTimers: {},      // video_id -> intervalId für live-preview
     lastTrackingStatus: {}, // video_id -> letzter Status zum Wechsel-erkennen
+    timelineVideo: null,            // Video-Datensatz für die Clip-Timeline im Player (null = clip-Modus oder nichts)
+    timelineEndedListener: null,    // Active "ended" handler beim Clip-Preview, damit wir ihn wieder loswerden
     // Setup state
     currentFrame: null,     // { b64, width, height, naturalWidth, naturalHeight }
     clickMode: "none",      // "none" | "corners" | "balls"
@@ -97,20 +99,20 @@ async function loadChannel(append = false) {
         });
         const d = await r.json();
         if (d.error) {
-            $("channel-info").textContent = "fehler: " + d.error;
+            $("channel-info").textContent = "error: " + d.error;
             return;
         }
         const newVideos = d.videos || [];
         state.channelVideos = state.channelVideos.concat(newVideos);
         state.channelOffset += newVideos.length;
         renderVideos();
-        $("channel-info").textContent = `${state.channelVideos.length} videos angezeigt`;
+        $("channel-info").textContent = `${state.channelVideos.length} videos shown`;
         // "mehr laden" zeigen wenn die letzte Seite voll war
         if (newVideos.length >= state.channelPageSize) {
             $("btn-load-more").classList.remove("hidden");
         }
     } catch (e) {
-        $("channel-info").textContent = "fehler: " + e.message;
+        $("channel-info").textContent = "error: " + e.message;
     }
 }
 
@@ -126,10 +128,40 @@ $("single-url-input").addEventListener("keypress", e => {
     if (e.key === "Enter") addSingleVideo();
 });
 
+// Local file import
+$("btn-import-local").addEventListener("click", importLocalFile);
+$("local-path-input").addEventListener("keypress", e => {
+    if (e.key === "Enter") importLocalFile();
+});
+
+async function importLocalFile() {
+    const path = $("local-path-input").value.trim();
+    if (!path) return;
+    $("channel-info").textContent = "importing...";
+    try {
+        const r = await fetch("/api/import-local", {
+            method: "POST", headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({path}),
+        });
+        const d = await r.json();
+        if (d.error) {
+            $("channel-info").textContent = "error: " + d.error;
+            return;
+        }
+        $("local-path-input").value = "";
+        $("channel-info").textContent = `imported: ${d.title}`;
+        // Switch to archive tab so user sees the new video
+        switchView("history");
+        await loadHistory();
+    } catch (e) {
+        $("channel-info").textContent = "error: " + e.message;
+    }
+}
+
 async function addSingleVideo() {
     const url = $("single-url-input").value.trim();
     if (!url) return;
-    $("channel-info").textContent = "lade video-info...";
+    $("channel-info").textContent = "loading video info...";
     try {
         const r = await fetch("/api/video-info", {
             method: "POST", headers: {"Content-Type": "application/json"},
@@ -137,21 +169,21 @@ async function addSingleVideo() {
         });
         const d = await r.json();
         if (d.error) {
-            $("channel-info").textContent = "fehler: " + d.error;
+            $("channel-info").textContent = "error: " + d.error;
             return;
         }
         // Duplikat-Check
         if (state.channelVideos.some(v => v.video_id === d.video.video_id)) {
-            $("channel-info").textContent = "video schon in der liste";
+            $("channel-info").textContent = "video already in list";
             return;
         }
         // Vorne dranhaengen, damit es prominent sichtbar ist
         state.channelVideos.unshift(d.video);
         renderVideos();
         $("single-url-input").value = "";
-        $("channel-info").textContent = `${state.channelVideos.length} videos angezeigt`;
+        $("channel-info").textContent = `${state.channelVideos.length} videos shown`;
     } catch (e) {
-        $("channel-info").textContent = "fehler: " + e.message;
+        $("channel-info").textContent = "error: " + e.message;
     }
 }
 
@@ -164,7 +196,7 @@ function renderVideos() {
         // Cross-Ref Badges
         let badges = "";
         if (v.in_archive) {
-            badges += `<span class="video-badge archived">archiv ✓</span>`;
+            badges += `<span class="video-badge archived">archived ✓</span>`;
             if (v.clips_count != null) {
                 badges += `<span class="video-badge">${v.clips_count} clips</span>`;
             }
@@ -183,8 +215,8 @@ function renderVideos() {
                 <div class="muted small">${v.video_id}${durTxt ? ` · ${durTxt}` : ""}</div>
             </div>
             <div class="video-actions">
-                <button class="btn-dl small" data-vid="${v.video_id}" title="nur download">↓ download</button>
-                <button class="btn-dl-track primary small" data-vid="${v.video_id}" title="download + tracking">↓ + track</button>
+                <button class="btn-dl small" data-vid="${v.video_id}" title="download only">↓ download</button>
+                <button class="btn-dl-track primary small" data-vid="${v.video_id}" title="download + track">↓ + track</button>
             </div>
         `;
         const cb = row.querySelector("input");
@@ -210,7 +242,7 @@ async function downloadSingle(v) {
         body: JSON.stringify({videos: [v]}),
     });
     const d = await r.json();
-    if (d.error) { alert("fehler: " + d.error); return; }
+    if (d.error) { alert("error: " + d.error); return; }
     switchView("queue");
     startPolling();
 }
@@ -229,12 +261,12 @@ async function openTrackModalForDownload(v) {
     $("modal-track").dataset.mode = "download_track";
     $("modal-track").dataset.payload = JSON.stringify(v);
     populateTrackSettings({last_setting: null});
-    $("track-warning").textContent = "wird heruntergeladen und dann automatisch getrackt.";
+    $("track-warning").textContent = "will be downloaded and then tracked automatically.";
     $("modal-track").classList.remove("hidden");
 }
 
 function updateSelectionCount() {
-    $("selection-count").textContent = `${state.selectedVideoIds.size} ausgewaehlt`;
+    $("selection-count").textContent = `${state.selectedVideoIds.size} selected`;
 }
 
 $("btn-select-all").addEventListener("click", () => {
@@ -250,7 +282,7 @@ $("btn-select-none").addEventListener("click", () => {
 
 $("btn-download-selected").addEventListener("click", async () => {
     if (state.selectedVideoIds.size === 0) {
-        alert("nichts ausgewaehlt");
+        alert("nothing selected");
         return;
     }
     const videos = state.channelVideos.filter(v => state.selectedVideoIds.has(v.video_id));
@@ -359,20 +391,20 @@ function renderTrackingStatus(jobs) {
     // Status-Zeile
     const statusEl = $("ltp-status");
     if (job.status === "running") {
-        statusEl.textContent = "läuft";
+        statusEl.textContent = "running";
         statusEl.className = "muted small status-running";
         cancelBtn.classList.remove("hidden");
         cancelBtn.dataset.vid = vid;
     } else if (job.status === "done") {
-        statusEl.textContent = "fertig";
+        statusEl.textContent = "done";
         statusEl.className = "muted small status-done";
         cancelBtn.classList.add("hidden");
     } else if (job.status === "error") {
-        statusEl.textContent = "fehler";
+        statusEl.textContent = "error";
         statusEl.className = "muted small status-error";
         cancelBtn.classList.add("hidden");
     } else if (job.status === "cancelled") {
-        statusEl.textContent = "abgebrochen";
+        statusEl.textContent = "cancelled";
         statusEl.className = "muted small";
         cancelBtn.classList.add("hidden");
     } else {
@@ -383,15 +415,17 @@ function renderTrackingStatus(jobs) {
 
     // Phase
     const phaseMap = {
-        "init": "vorbereiten",
-        "scan": "pass 1 — top-view-szenen suchen",
-        "clip_load": "frames laden",
-        "clip_pivot": "pivot-frame suchen",
-        "clip_track": "bälle tracken",
-        "clip_write": "clip schreiben",
-        "done": "abgeschlossen",
+        "init": "preparing",
+        "scan": "pass 1 — searching top-view scenes",
+        "clip_load": "loading frames",
+        "clip_pivot": "finding pivot frame",
+        "clip_track": "tracking balls",
+        "clip_write": "writing clip",
+        "done": "finished",
     };
-    $("ltp-phase").textContent = phaseMap[job.phase] || job.phase || "";
+    const phaseTxt = phaseMap[job.phase] || job.phase || "";
+    const settingTxt = job.current_setting ? ` · setting: ${job.current_setting}` : "";
+    $("ltp-phase").textContent = phaseTxt + settingTxt;
 
     // Progress
     if (job.phase === "scan" && job.total > 0) {
@@ -407,10 +441,10 @@ function renderTrackingStatus(jobs) {
     if (job.phase === "scan") {
         const cnt = job.ranges_so_far_count ?? 0;
         $("ltp-ranges").textContent = cnt > 0
-            ? `top-view-bereiche bisher: ${cnt}`
-            : "(noch keine top-view-bereiche gefunden)";
+            ? `top-view ranges so far: ${cnt}`
+            : "(no top-view ranges found yet)";
     } else if (job.status === "done") {
-        $("ltp-ranges").textContent = `${job.clips_found ?? 0} clips aus ${job.ranges_found ?? 0} bereichen`;
+        $("ltp-ranges").textContent = `${job.clips_found ?? 0} clips from ${job.ranges_found ?? 0} ranges`;
     } else if (job.status === "error") {
         $("ltp-ranges").textContent = `${job.error || ""}`;
     } else {
@@ -501,9 +535,9 @@ function renderHistory() {
                 <div class="history-path">${escapeHtml(v.folder || "")}</div>
             </div>
             <div class="history-actions">
-                <button class="btn-track" data-vid="${v.video_id}">tracken</button>
+                <button class="btn-track" data-vid="${v.video_id}">track</button>
                 ${hasClips ? `<button class="btn-toggle-clips small" data-vid="${v.video_id}">${clipsExpanded ? "− clips" : "+ clips"}</button>` : ""}
-                <button class="btn-files small" data-vid="${v.video_id}">dateien</button>
+                <button class="btn-files small" data-vid="${v.video_id}">files</button>
                 <button class="btn-del danger small" data-vid="${v.video_id}">×</button>
             </div>
             <div class="history-clips ${clipsExpanded ? "" : "hidden"}" data-clips-for="${v.video_id}"></div>
@@ -531,16 +565,27 @@ function fillClipsArea(v) {
     const panel = document.querySelector(`[data-clips-for="${v.video_id}"]`);
     if (!panel) return;
     if (!v.clips || v.clips.length === 0) {
-        panel.innerHTML = `<div class="muted small">keine clips vorhanden</div>`;
+        panel.innerHTML = `<div class="muted small">no clips</div>`;
         return;
     }
-    let html = `<div class="clip-grid">`;
+    let html = `
+        <div class="clips-toolbar">
+            <button class="small btn-clips-select-all" data-vid="${v.video_id}">all</button>
+            <button class="small btn-clips-select-none" data-vid="${v.video_id}">none</button>
+            <span class="spacer"></span>
+            <span class="muted small clips-selected-count" data-vid="${v.video_id}">0 selected</span>
+            <button class="small danger btn-clips-delete" data-vid="${v.video_id}" disabled>delete selected</button>
+        </div>
+        <div class="clip-grid">`;
     v.clips.forEach(c => {
         const framesTxt = c.frames != null ? `${c.frames}f` : "";
         const thumbSrc = c.thumb
             ? `/api/file/${v.video_id}/${encodeURIComponent(c.thumb)}`
             : "";
         html += `<div class="clip-card" data-vid="${v.video_id}" data-clip="${c.mp4}" data-clipname="${c.name}">
+            <label class="clip-select" onclick="event.stopPropagation()">
+                <input type="checkbox" class="clip-checkbox" data-vid="${v.video_id}" data-clipname="${c.name}">
+            </label>
             ${thumbSrc ? `<img class="clip-thumb" src="${thumbSrc}" alt="">` : `<div class="clip-thumb clip-thumb-placeholder">▶</div>`}
             <div class="clip-card-name">${c.name}</div>
             <div class="clip-card-meta">${framesTxt}</div>
@@ -548,12 +593,58 @@ function fillClipsArea(v) {
     });
     html += "</div>";
     panel.innerHTML = html;
+
+    // Click auf Clip-Card → Player. Checkbox-Klicks bubblen NICHT bis hierher (stopPropagation).
     panel.querySelectorAll(".clip-card").forEach((card, idx) => {
-        card.addEventListener("click", () => {
+        card.addEventListener("click", (e) => {
+            if (e.target.closest(".clip-select")) return;
             setPlayerContext(v.video_id, v.clips, idx);
             playArchiveFile(card.dataset.vid, card.dataset.clip, card.dataset.clipname);
         });
     });
+
+    // Checkbox-Changes
+    panel.querySelectorAll(".clip-checkbox").forEach(cb => {
+        cb.addEventListener("change", () => updateClipSelectionUI(v.video_id));
+    });
+
+    // Toolbar-Aktionen
+    panel.querySelector(".btn-clips-select-all")?.addEventListener("click", () => {
+        panel.querySelectorAll(".clip-checkbox").forEach(cb => cb.checked = true);
+        updateClipSelectionUI(v.video_id);
+    });
+    panel.querySelector(".btn-clips-select-none")?.addEventListener("click", () => {
+        panel.querySelectorAll(".clip-checkbox").forEach(cb => cb.checked = false);
+        updateClipSelectionUI(v.video_id);
+    });
+    panel.querySelector(".btn-clips-delete")?.addEventListener("click", async () => {
+        const names = [...panel.querySelectorAll(".clip-checkbox:checked")]
+            .map(cb => cb.dataset.clipname);
+        if (names.length === 0) return;
+        if (!confirm(`${names.length} clip(s) really delete?`)) return;
+        try {
+            const r = await fetch("/api/clip/delete", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({video_id: v.video_id, clip_names: names}),
+            });
+            const d = await r.json();
+            if (d.error) { alert("error: " + d.error); return; }
+            await loadHistory();
+        } catch (e) {
+            alert("error: " + e.message);
+        }
+    });
+}
+
+function updateClipSelectionUI(vid) {
+    const panel = document.querySelector(`[data-clips-for="${vid}"]`);
+    if (!panel) return;
+    const checked = panel.querySelectorAll(".clip-checkbox:checked").length;
+    const countEl = panel.querySelector(".clips-selected-count");
+    const delBtn = panel.querySelector(".btn-clips-delete");
+    if (countEl) countEl.textContent = `${checked} selected`;
+    if (delBtn) delBtn.disabled = checked === 0;
 }
 
 function toggleClips(vid) {
@@ -581,10 +672,11 @@ async function playArchiveVideo(v) {
     const d = await r.json();
     const vfile = (d.files || []).find(f => f.is_video);
     if (!vfile) {
-        alert("keine video-datei gefunden");
+        alert("no video file found");
         return;
     }
     clearPlayerContext();
+    state.timelineVideo = v;     // Clip-Bereiche kennzeichnen
     playArchiveFile(v.video_id, vfile.name, v.title_en || v.title || v.video_id);
 }
 
@@ -593,12 +685,96 @@ function playArchiveFile(vid, filename, title) {
     $("player-caption").textContent = `${vid} · ${filename}`;
     const vp = $("player-video");
     vp.pause();
+    clearTimelineEndedListener();
     vp.src = `/api/file/${vid}/${encodeURIComponent(filename)}`;
     vp.load();
     $("modal-player").classList.remove("hidden");
     vp.play().catch(err => {
         console.debug("autoplay blocked:", err);
     });
+    // Timeline nur fuer das Original-Video eines Archive-Eintrags rendern.
+    // state.timelineVideo wird in playArchiveVideo gesetzt. Im Clip-Modus
+    // ist state.playerContext gesetzt → keine Timeline.
+    if (state.timelineVideo && !state.playerContext) {
+        renderClipTimeline(state.timelineVideo);
+    } else {
+        const bar = $("player-timeline");
+        bar.classList.add("hidden");
+        bar.innerHTML = "";
+    }
+}
+
+function renderClipTimeline(v) {
+    const bar = $("player-timeline");
+    bar.innerHTML = "";
+    if (!v || !v.clips || v.clips.length === 0 || !v.duration_s) {
+        bar.classList.add("hidden");
+        return;
+    }
+    bar.classList.remove("hidden");
+    const totalDur = v.duration_s;
+    const vp = $("player-video");
+    v.clips.forEach((c) => {
+        if (c.start_frame_in_video == null || !c.fps || !c.frames) return;
+        const startS = c.start_frame_in_video / c.fps;
+        const durS = c.frames / c.fps;
+        const leftPct = Math.max(0, Math.min(100, (startS / totalDur) * 100));
+        const widthPct = Math.max(0.2, Math.min(100 - leftPct, (durS / totalDur) * 100));
+        const seg = document.createElement("div");
+        seg.className = "timeline-segment";
+        seg.style.left = `${leftPct}%`;
+        seg.style.width = `${widthPct}%`;
+        seg.dataset.label = `${c.name} — ${fmtDuration(durS)}`;
+        seg.title = `${c.name} (${fmtDuration(durS)}) — click to preview, returns here when done`;
+        seg.addEventListener("click", () => previewClipFromTimeline(v, c, vp));
+        bar.appendChild(seg);
+    });
+}
+
+function previewClipFromTimeline(v, clip, vp) {
+    // Bisherige Position im Original-Video merken
+    const savedSrc = vp.src;
+    const savedTime = vp.currentTime || 0;
+    const savedPaused = vp.paused;
+
+    clearTimelineEndedListener();
+
+    // Auf Clip wechseln
+    vp.pause();
+    vp.src = `/api/file/${v.video_id}/${encodeURIComponent(clip.mp4)}`;
+    $("player-caption").textContent = `${v.video_id} · ${clip.mp4} · preview from timeline`;
+    vp.load();
+    vp.play().catch(() => {});
+
+    // Timeline waehrend Preview ausblenden — sonst klickt sich der User
+    // unbeabsichtigt in einen neuen Preview
+    $("player-timeline").classList.add("hidden");
+
+    // Bei "ended": zum Original zurueck, an der gemerkten Position, pausiert.
+    const onEnded = () => {
+        vp.removeEventListener("ended", onEnded);
+        state.timelineEndedListener = null;
+        vp.src = savedSrc;
+        const onMeta = () => {
+            vp.removeEventListener("loadedmetadata", onMeta);
+            try { vp.currentTime = savedTime; } catch (e) {}
+            if (savedPaused) vp.pause();
+            $("player-caption").textContent = `${v.video_id}`;
+            $("player-timeline").classList.remove("hidden");
+        };
+        vp.addEventListener("loadedmetadata", onMeta, { once: true });
+        vp.load();
+    };
+    vp.addEventListener("ended", onEnded);
+    state.timelineEndedListener = onEnded;
+}
+
+function clearTimelineEndedListener() {
+    const vp = $("player-video");
+    if (state.timelineEndedListener) {
+        try { vp.removeEventListener("ended", state.timelineEndedListener); } catch (e) {}
+        state.timelineEndedListener = null;
+    }
 }
 
 // Player-Kontext: welche Clip-Liste gerade durchnavigiert wird, und an welcher
@@ -610,6 +786,9 @@ function setPlayerContext(vid, clips, currentIndex) {
         clips: clips || [],
         currentIndex: currentIndex,
     };
+    state.timelineVideo = null;            // Clip-Modus → keine Timeline
+    $("player-timeline").classList.add("hidden");
+    $("player-timeline").innerHTML = "";
     updatePlayerNavButtons();
 }
 
@@ -622,13 +801,16 @@ function updatePlayerNavButtons() {
     const ctx = state.playerContext;
     const prev = $("player-prev");
     const next = $("player-next");
-    if (!ctx || !ctx.clips || ctx.clips.length <= 1) {
+    const del = $("player-delete");
+    if (!ctx || !ctx.clips || ctx.clips.length === 0) {
         prev.disabled = true;
         next.disabled = true;
+        del.classList.add("hidden");
         return;
     }
     prev.disabled = ctx.currentIndex <= 0;
     next.disabled = ctx.currentIndex >= ctx.clips.length - 1;
+    del.classList.remove("hidden");
 }
 
 function playPlayerNav(delta) {
@@ -649,7 +831,7 @@ document.addEventListener("DOMContentLoaded", () => {
         cancelBtn.addEventListener("click", async () => {
             const vid = cancelBtn.dataset.vid;
             if (!vid) return;
-            if (!confirm("tracking abbrechen?")) return;
+            if (!confirm("cancel tracking?")) return;
             try {
                 await fetch("/api/track/cancel", {
                     method: "POST",
@@ -663,8 +845,35 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     const prevBtn = document.getElementById("player-prev");
     const nextBtn = document.getElementById("player-next");
+    const delBtn = document.getElementById("player-delete");
     if (prevBtn) prevBtn.addEventListener("click", () => playPlayerNav(-1));
     if (nextBtn) nextBtn.addEventListener("click", () => playPlayerNav(1));
+    if (delBtn) delBtn.addEventListener("click", async () => {
+        const ctx = state.playerContext;
+        if (!ctx || !ctx.clips || ctx.clips.length === 0) return;
+        const c = ctx.clips[ctx.currentIndex];
+        if (!c) return;
+        if (!confirm(`clip "${c.name}" really delete?`)) return;
+        try {
+            const r = await fetch("/api/clip/delete", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({video_id: ctx.vid, clip_names: [c.name]}),
+            });
+            const d = await r.json();
+            if (d.error) { alert("error: " + d.error); return; }
+            // Modal schliessen, Archive refreshen
+            const vp = $("player-video");
+            vp.pause();
+            vp.removeAttribute("src");
+            vp.load();
+            $("modal-player").classList.add("hidden");
+            clearPlayerContext();
+            await loadHistory();
+        } catch (e) {
+            alert("error: " + e.message);
+        }
+    });
 });
 
 // Beim Schliessen des Players: src clearen damit es nicht weiterspielt
@@ -701,7 +910,7 @@ async function toggleFiles(vid) {
 }
 
 async function deleteHistory(vid) {
-    if (!confirm("aus der history loeschen? (datei bleibt auf der platte)")) return;
+    if (!confirm("remove from history? (files stay on disk)")) return;
     await fetch("/api/history/delete", {
         method: "POST", headers: {"Content-Type": "application/json"},
         body: JSON.stringify({video_id: vid}),
@@ -745,7 +954,7 @@ function populateTrackSettings(v) {
     if (state.settings.length === 0) {
         const opt = document.createElement("option");
         opt.value = "";
-        opt.textContent = "— noch keine settings angelegt —";
+        opt.textContent = "— no settings yet —";
         sel.appendChild(opt);
         $("track-warning").textContent = "erst im setup-tab ein setting erstellen";
         $("btn-track-start").disabled = true;
@@ -767,7 +976,7 @@ function populateTrackSettings(v) {
 $("btn-track-start").addEventListener("click", async () => {
     const sid = $("track-setting-select").value;
     if (!sid) {
-        alert("setting waehlen");
+        alert("choose setting");
         return;
     }
     const mode = $("modal-track").dataset.mode || "track_only";
@@ -779,7 +988,7 @@ $("btn-track-start").addEventListener("click", async () => {
             body: JSON.stringify({videos: [v], auto_track_setting: sid}),
         });
         const d = await r.json();
-        if (d.error) { alert("fehler: " + d.error); return; }
+        if (d.error) { alert("error: " + d.error); return; }
         closeModal("modal-track");
         switchView("queue");
         startPolling();
@@ -794,7 +1003,7 @@ $("btn-track-start").addEventListener("click", async () => {
     });
     const d = await r.json();
     if (d.error) {
-        alert("fehler: " + d.error);
+        alert("error: " + d.error);
         return;
     }
     closeModal("modal-track");
@@ -811,26 +1020,42 @@ $$('[data-close-modal]').forEach(b => {
 
 function closeModal(id) {
     $(id).classList.add("hidden");
+    if (id === "modal-player") {
+        // Player cleanup: timeline-state, audio/video pausieren, src loslassen
+        clearTimelineEndedListener();
+        state.timelineVideo = null;
+        const vp = $("player-video");
+        try { vp.pause(); } catch (e) {}
+        try { vp.removeAttribute("src"); vp.load(); } catch (e) {}
+        $("player-timeline").classList.add("hidden");
+        $("player-timeline").innerHTML = "";
+    }
 }
 
 // =========================================================================
-// Global settings modal
+// Settings modal (merged: download folder + tracking parameters)
 // =========================================================================
 
-$("btn-global").addEventListener("click", async () => {
-    const r = await fetch("/api/global");
-    const d = await r.json();
-    const g = d.global || {};
-    $$('#modal-global [data-gparam]').forEach(inp => {
+$("btn-settings").addEventListener("click", async () => {
+    // Load global tracking params
+    const r1 = await fetch("/api/global");
+    const d1 = await r1.json();
+    const g = d1.global || {};
+    $$('#modal-settings [data-gparam]').forEach(inp => {
         const k = inp.dataset.gparam;
         if (k in g) inp.value = g[k];
     });
-    $("modal-global").classList.remove("hidden");
+    // Load download folder
+    const r2 = await fetch("/api/config");
+    const d2 = await r2.json();
+    $("config-download-dir").value = d2.download_dir || "";
+    $("modal-settings").classList.remove("hidden");
 });
 
-$("btn-save-global").addEventListener("click", async () => {
+$("btn-save-settings").addEventListener("click", async () => {
+    // Save tracking params
     const payload = {};
-    $$('#modal-global [data-gparam]').forEach(inp => {
+    $$('#modal-settings [data-gparam]').forEach(inp => {
         const k = inp.dataset.gparam;
         const v = inp.value;
         payload[k] = (inp.type === "number") ? parseFloat(v) : v;
@@ -839,32 +1064,18 @@ $("btn-save-global").addEventListener("click", async () => {
         method: "POST", headers: {"Content-Type": "application/json"},
         body: JSON.stringify(payload),
     });
-    closeModal("modal-global");
-});
-
-// =========================================================================
-// Config modal
-// =========================================================================
-
-$("btn-config").addEventListener("click", async () => {
-    const r = await fetch("/api/config");
-    const d = await r.json();
-    $("config-download-dir").value = d.download_dir || "";
-    $("modal-config").classList.remove("hidden");
-});
-
-$("btn-save-config").addEventListener("click", async () => {
+    // Save download folder
     const dir = $("config-download-dir").value.trim();
-    const r = await fetch("/api/config", {
+    const cr = await fetch("/api/config", {
         method: "POST", headers: {"Content-Type": "application/json"},
         body: JSON.stringify({download_dir: dir}),
     });
-    const d = await r.json();
-    if (d.error) {
-        alert("fehler: " + d.error);
+    const cd = await cr.json();
+    if (cd.error) {
+        alert("error: " + cd.error);
         return;
     }
-    closeModal("modal-config");
+    closeModal("modal-settings");
 });
 
 // =========================================================================
@@ -969,13 +1180,13 @@ function fillEditor(s) {
     updateStatusLabels();
     updateCornersReadout();
     redrawCanvas();
-    $("setup-canvas-hint").textContent = 'erst „frame greifen" druecken';
+    $("setup-canvas-hint").textContent = 'click „grab frame" first';
     // Live-Preview-Status zuruecksetzen
     resetTrackingState();
     state.liveImage = null;
-    showLivePlaceholder("erst tisch-ecken UND ball-farben setzen, dann erscheint hier die rektifizierte top-down-ansicht mit ball-erkennung");
+    showLivePlaceholder("set table corners AND ball colors first, then the rectified top-down view with ball detection appears here");
     setLivePreviewStatus("");
-    setLiveStatusBadge("inaktiv");
+    setLiveStatusBadge("inactive");
 }
 
 async function loadHistoryForSetupSelect() {
@@ -1002,7 +1213,7 @@ async function loadSetupVideo(vid, t) {
     const d = await r.json();
     const vfile = (d.files || []).find(f => f.is_video);
     if (!vfile) {
-        alert("keine video-datei gefunden");
+        alert("no video file found");
         return;
     }
     const v = $("setup-video");
@@ -1020,7 +1231,7 @@ async function loadSetupVideo(vid, t) {
 $("btn-grab-frame").addEventListener("click", () => {
     const video = $("setup-video");
     if (!video.src || video.readyState < 2) {
-        alert("erst ein video laden und abspielen lassen bis der frame da ist");
+        alert("first load a video and play it until the frame is available");
         return;
     }
     const canvas = $("setup-canvas");
@@ -1194,7 +1405,7 @@ function redrawCanvas() {
             ctx.fillStyle = "#666";
             ctx.font = "16px JetBrains Mono, monospace";
             ctx.textAlign = "center";
-            ctx.fillText("frame greifen", canvas.width / 2, canvas.height / 2);
+            ctx.fillText("grab frame", canvas.width / 2, canvas.height / 2);
         }
         return;
     }
@@ -1523,11 +1734,11 @@ function resetTrackingState() {
 
 function statusLabel(s) {
     return ({
-        "no_table":         "kein tisch",
-        "waiting_init":     "wartet auf init",
+        "no_table":         "no table",
+        "waiting_init":     "waiting for init",
         "tracking":         "tracking",
         "tracking_partial": "tracking (luecken)",
-    })[s] || s || "inaktiv";
+    })[s] || s || "inactive";
 }
 
 function statusCssClass(s, foundBalls) {
@@ -1540,9 +1751,9 @@ function statusCssClass(s, foundBalls) {
 async function updateLivePreview(opts = {}) {
     if (state.livePreviewInFlight) return;
     if (!isCurrentSettingComplete()) {
-        showLivePlaceholder("erst tisch-ecken UND ball-farben setzen, dann erscheint hier die rektifizierte top-down-ansicht mit ball-erkennung");
+        showLivePlaceholder("set table corners AND ball colors first, then the rectified top-down view with ball detection appears here");
         setLivePreviewStatus("");
-        setLiveStatusBadge("inaktiv");
+        setLiveStatusBadge("inactive");
         return;
     }
 
@@ -1557,9 +1768,9 @@ async function updateLivePreview(opts = {}) {
         frameB64 = state.currentFrame.b64;
     }
     if (!frameB64) {
-        showLivePlaceholder("kein video-frame verfuegbar — video laden und abspielen");
+        showLivePlaceholder("no video frame available — load and play a video");
         setLivePreviewStatus("");
-        setLiveStatusBadge("kein video");
+        setLiveStatusBadge("no video");
         return;
     }
 
@@ -1569,7 +1780,7 @@ async function updateLivePreview(opts = {}) {
     state.lastDetectionAt = now;
 
     state.livePreviewInFlight = true;
-    setLiveStatusBadge("aktiv", "active");
+    setLiveStatusBadge("active", "active");
     try {
         const setting = collectCurrentSettingForDetect();
         const r = await fetch("/api/setup/detect", {
@@ -1586,7 +1797,7 @@ async function updateLivePreview(opts = {}) {
         if (d.error) {
             showLivePlaceholder(`fehler: ${d.error}`);
             setLivePreviewStatus("");
-            setLiveStatusBadge("fehler", "err");
+            setLiveStatusBadge("error", "err");
             return;
         }
 
@@ -1640,8 +1851,8 @@ async function updateLivePreview(opts = {}) {
         setLiveStatusBadge(statusLabel(d.status), statusCssClass(d.status, d.found_balls));
     } catch (e) {
         console.warn("live preview fail", e);
-        setLivePreviewStatus("netz-/server-fehler", "err");
-        setLiveStatusBadge("fehler", "err");
+        setLivePreviewStatus("network/server error", "err");
+        setLiveStatusBadge("error", "err");
     } finally {
         state.livePreviewInFlight = false;
     }
@@ -1773,7 +1984,7 @@ $("btn-save-setting").addEventListener("click", async () => {
     });
     const d = await r.json();
     if (d.error) {
-        alert("fehler: " + d.error);
+        alert("error: " + d.error);
         return;
     }
     state.activeSettingId = d.setting.id;
@@ -1784,7 +1995,7 @@ $("btn-save-setting").addEventListener("click", async () => {
 
 $("btn-delete-setting").addEventListener("click", async () => {
     if (!state.activeSettingId) return;
-    if (!confirm("setting wirklich loeschen?")) return;
+    if (!confirm("setting really delete?")) return;
     await fetch(`/api/settings/${state.activeSettingId}`, {method: "DELETE"});
     state.activeSettingId = null;
     await loadSettings();

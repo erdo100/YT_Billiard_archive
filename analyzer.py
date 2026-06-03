@@ -563,11 +563,12 @@ def split_tracks_into_subclips(tracks: dict, fps: float, gs: GlobalSettings,
     if f_min < periods[0][0]:
         boundaries.append((f_min, periods[0][0], False, True))
 
-    # Zwischen den Perioden — Start mit Lookback in die vorige Stillstands-Phase hinein
+    # Zwischen den Perioden — Start mit Lookback in die vorige Stillstands-Phase hinein,
+    # ENDE bis incl. Ende der naechsten Stillstands-Phase (= Ruhepunkt nach Stoss sichtbar)
     for i in range(len(periods) - 1):
         period_start, period_end = periods[i]
         sub_start = max(period_start, period_end - lookback_frames)
-        sub_end = periods[i + 1][0]
+        sub_end = periods[i + 1][1]   # Ende der naechsten Stillstands-Phase
         if sub_end > sub_start:
             boundaries.append((sub_start, sub_end, True, True))
 
@@ -663,6 +664,12 @@ def track_bidirectional(clip_frames: list[bytes], pivot_idx: int,
 
 # ---- Pass 1: Clip-Bereiche identifizieren -------------------------------
 
+class NoTopViewFoundException(Exception):
+    """Wird geworfen wenn nach auto_fallback_seconds keine einzige Top-View-
+    Sample-Position erkannt wurde. Aufrufer kann ein anderes Setting probieren."""
+    pass
+
+
 def scan_clip_ranges(video_path: str, setting: Setting, gs: GlobalSettings,
                      preview_path: Path | None = None,
                      progress_cb=None) -> tuple[list[tuple[int, int]], float, int]:
@@ -693,6 +700,12 @@ def scan_clip_ranges(video_path: str, setting: Setting, gs: GlobalSettings,
     run_start_f = 0
     last_visible_f = 0
     consecutive_invisible_after_visible = 0   # fuer Single-Sample-Glue
+    any_visible_sample = False
+
+    # Auto-Fallback-Schwelle: Wenn bis zu diesem Video-Frame KEIN einziger
+    # visible-Sample gefunden wurde, bricht der Scan mit NoTopViewFoundException ab.
+    fallback_s = float(getattr(gs, 'auto_fallback_seconds', 0.0) or 0.0)
+    fallback_threshold_f = int(fallback_s * fps) if fallback_s > 0 else 0
 
     sample_idx = 0
     total_samples = max(1, total // sample_step)
@@ -704,6 +717,8 @@ def scan_clip_ranges(video_path: str, setting: Setting, gs: GlobalSettings,
 
         visible, pct = is_table_visible(frame, setting, gs.felt_detect_pct)
         samples.append((f_idx, visible))
+        if visible:
+            any_visible_sample = True
 
         # Online Range-Building mit 1-Sample-Glue
         if visible:
@@ -724,6 +739,17 @@ def scan_clip_ranges(video_path: str, setting: Setting, gs: GlobalSettings,
                         # Pass 1 ist locker — Min-Dauer wird in Pass 2 nochmal
                         # streng angewandt (auf Sub-Clip-Ebene)
                         live_ranges.append((run_start_f, last_visible_f))
+
+        # Auto-Fallback-Check: nach fallback_threshold_f noch nichts visible?
+        if (fallback_threshold_f > 0 and
+                f_idx >= fallback_threshold_f and
+                not any_visible_sample):
+            cap.release()
+            if progress_cb:
+                progress_cb("scan", f_idx, total, [])
+            raise NoTopViewFoundException(
+                f"Nach {fallback_s:.0f}s Video keine Top-View mit diesem Setting"
+            )
 
         # Preview-Bild aktualisieren
         if preview_path:
@@ -777,8 +803,16 @@ def decode_jpeg(jpeg_bytes: bytes | None) -> np.ndarray | None:
 
 # ---- Output: Clip-MP4 + JSON --------------------------------------------
 
-def _convert_to_h264(input_path: str, output_path: str) -> bool:
+def _convert_to_h264(input_path: str, output_path: str,
+                     audio_video: str | None = None,
+                     audio_start_s: float | None = None,
+                     audio_duration_s: float | None = None) -> bool:
     """Konvertiert ein Video zu H.264/yuv420p via ffmpeg fuer Browser-Kompat.
+
+    Wenn audio_video gesetzt ist: muxt das Audio aus diesem Video in den Output
+    rein. audio_start_s / audio_duration_s definieren den Audio-Bereich. Bei
+    Videos ohne Audio-Track wird der Output stumm (dank `?` in -map).
+
     OpenCV's mp4v-codiertes MP4 ist nicht in allen Browsern abspielbar.
     Returns True bei Erfolg, False wenn ffmpeg fehlt/fehlschlaegt.
     """
@@ -787,14 +821,34 @@ def _convert_to_h264(input_path: str, output_path: str) -> bool:
     if not shutil.which("ffmpeg"):
         return False
     try:
-        result = subprocess.run([
-            "ffmpeg", "-y", "-loglevel", "error",
-            "-i", input_path,
+        cmd = ["ffmpeg", "-y", "-loglevel", "error",
+               "-i", input_path]
+
+        # Optional: Audio-Quelle mit Seek + Duration vor dem -i (= input-options)
+        want_audio = (audio_video is not None and
+                      audio_start_s is not None and
+                      audio_duration_s is not None)
+        if want_audio:
+            cmd.extend(["-ss", f"{audio_start_s:.3f}",
+                        "-t", f"{audio_duration_s:.3f}",
+                        "-i", audio_video])
+
+        cmd.extend([
             "-c:v", "libx264", "-preset", "fast", "-crf", "23",
             "-pix_fmt", "yuv420p",
             "-movflags", "+faststart",
-            output_path,
-        ], capture_output=True, timeout=300)
+        ])
+
+        if want_audio:
+            cmd.extend([
+                "-c:a", "aac", "-b:a", "128k",
+                "-map", "0:v:0",     # Video aus input 0 (silent rendering)
+                "-map", "1:a:0?",    # Audio aus input 1 (optional, `?` = kein Fehler wenn kein Track)
+                "-shortest",         # auf kürzeren Stream begrenzen (Video definiert Länge)
+            ])
+
+        cmd.append(output_path)
+        result = subprocess.run(cmd, capture_output=True, timeout=300)
         if result.returncode != 0:
             print(f"[ffmpeg] returncode {result.returncode}: {result.stderr.decode(errors='ignore')[:300]}")
             return False
@@ -806,7 +860,8 @@ def _convert_to_h264(input_path: str, output_path: str) -> bool:
 
 def write_clip_outputs(clip_idx: int, tracks: dict, clip_frames: list[bytes],
                        H: np.ndarray, fps: float, start_frame_in_video: int,
-                       pivot_idx: int, output_dir: Path, setting: Setting
+                       pivot_idx: int, output_dir: Path, setting: Setting,
+                       source_video_path: str | None = None
                        ) -> dict:
     """Schreibt clipNN.mp4, clipNN.json, clipNN_thumb.jpg.
 
@@ -938,8 +993,17 @@ def write_clip_outputs(clip_idx: int, tracks: dict, clip_frames: list[bytes],
             # Kein aktueller-Ball-Marker im Thumbnail (User-Wunsch)
             cv2.imwrite(str(thumb_path), thumb_rect, [cv2.IMWRITE_JPEG_QUALITY, 82])
 
-    # H.264-Konvertierung
-    if _convert_to_h264(str(tmp_mp4), str(final_mp4)):
+    # H.264-Konvertierung mit optionalem Audio aus dem Original-Video
+    audio_start_s = None
+    audio_duration_s = None
+    if source_video_path:
+        audio_start_s = start_frame_in_video / fps
+        audio_duration_s = len(clip_frames) / fps
+
+    if _convert_to_h264(str(tmp_mp4), str(final_mp4),
+                        audio_video=source_video_path,
+                        audio_start_s=audio_start_s,
+                        audio_duration_s=audio_duration_s):
         try:
             tmp_mp4.unlink()
         except Exception:
@@ -1161,7 +1225,8 @@ def track_video(video_path: str, setting: Setting, gs: GlobalSettings,
             progress_cb("clip_write", final_idx, len(pending_subclips))
         meta = write_clip_outputs(
             final_idx, sc["tracks"], sc["frames"], H, fps,
-            sc["start_frame_in_video"], sc["pivot_idx"], output_dir, setting
+            sc["start_frame_in_video"], sc["pivot_idx"], output_dir, setting,
+            source_video_path=video_path,
         )
         meta["duration_s"] = round(sc["duration_s"], 2)
         meta["from_range"] = sc["from_range"]

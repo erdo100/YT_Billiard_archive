@@ -185,6 +185,20 @@ def count_clips_in_folder(folder: str) -> int:
         return 0
 
 
+def write_youtube_link_file(folder: Path, video_id: str, title: str = "") -> bool:
+    """Schreibt eine Windows-kompatible .url-Datei mit dem YouTube-Link.
+    Funktioniert auch unter macOS/Linux (Plain Text, Doppelklick-Verhalten ist
+    OS-spezifisch). Dateiname: youtube_link.url"""
+    try:
+        url = f"https://www.youtube.com/watch?v={video_id}"
+        content = f"[InternetShortcut]\nURL={url}\n"
+        (folder / "youtube_link.url").write_text(content, encoding="utf-8")
+        return True
+    except Exception as e:
+        print(f"[yt-link] {folder}: {e}")
+        return False
+
+
 def generate_video_thumbnail(video_path: str, output_path: str,
                              seconds_before_end: float = 0.5) -> bool:
     """Extrahiert einen Frame nahe am Video-Ende und speichert als JPEG.
@@ -237,10 +251,14 @@ def list_clips_in_folder(folder: str) -> list[dict]:
                 "json": jp.name,
                 "thumb": thumb.name if thumb.exists() else None,
                 "frames": None,
+                "start_frame_in_video": None,
+                "fps": None,
             }
             try:
                 meta = json.loads(jp.read_text(encoding="utf-8"))
                 entry["frames"] = meta.get("frames_total")
+                entry["start_frame_in_video"] = meta.get("start_frame_in_video")
+                entry["fps"] = meta.get("fps")
             except Exception:
                 pass
             out.append(entry)
@@ -281,6 +299,10 @@ def ensure_video_meta(video_id: str) -> dict:
         thumb = Path(d["folder"]) / "_thumb.jpg"
         if not thumb.exists():
             generate_video_thumbnail(d["video_path"], str(thumb), seconds_before_end=0.5)
+        # YouTube-Link lazy
+        url_file = Path(d["folder"]) / "youtube_link.url"
+        if not url_file.exists():
+            write_youtube_link_file(Path(d["folder"]), video_id)
     return d
 
 
@@ -476,13 +498,16 @@ def download_video(item: dict):
     videos = list(folder.glob(f"{folder_name}.*"))
     video_files = [v for v in videos if v.suffix.lower() in [".mp4", ".mkv", ".webm"]]
     if not video_files:
-        raise RuntimeError("Download abgeschlossen, aber keine Video-Datei gefunden")
+        raise RuntimeError("download finished but no video file found")
     video_path = video_files[0]
     duration = get_video_duration_s(str(video_path))
 
     # Thumbnail erzeugen (0.5s vor Video-Ende)
     thumb_path = folder / "_thumb.jpg"
     generate_video_thumbnail(str(video_path), str(thumb_path), seconds_before_end=0.5)
+
+    # YouTube-Link als .url-Datei
+    write_youtube_link_file(folder, video_id, real_title)
 
     with db_conn() as c:
         c.execute("""
@@ -543,7 +568,7 @@ def run_tracking(video_id: str, setting_id: str):
     if not row:
         with status_lock:
             tracking_jobs[video_id] = {
-                "status": "error", "error": "Video nicht in DB", "phase": "", 
+                "status": "error", "error": "video not in db", "phase": "", 
                 "current": 0, "total": 0, "clips_found": 0,
             }
         return
@@ -555,7 +580,7 @@ def run_tracking(video_id: str, setting_id: str):
     if setting is None:
         with status_lock:
             tracking_jobs[video_id] = {
-                "status": "error", "error": "Setting nicht gefunden", "phase": "",
+                "status": "error", "error": "setting not found", "phase": "",
                 "current": 0, "total": 0, "clips_found": 0,
             }
         return
@@ -563,7 +588,7 @@ def run_tracking(video_id: str, setting_id: str):
         with status_lock:
             tracking_jobs[video_id] = {
                 "status": "error",
-                "error": "Setting unvollstaendig (Tisch-Ecken oder Ball-Farben fehlen)",
+                "error": "setting incomplete (table corners or ball colors missing)",
                 "phase": "", "current": 0, "total": 0, "clips_found": 0,
             }
         return
@@ -596,9 +621,42 @@ def run_tracking(video_id: str, setting_id: str):
             tracking_jobs[video_id] = job
 
     try:
-        summary = track_video(video_path, setting, gs, folder, progress)
+        # Setting-Queue aufbauen — bei auto_fallback_seconds > 0 zusaetzlich
+        # alle anderen vollstaendigen Settings als Fallback.
+        settings_queue = [setting]
+        if (gs.auto_fallback_seconds or 0) > 0:
+            others = [s for s in list_settings()
+                      if s.id != setting_id and s.is_complete()]
+            settings_queue.extend(others)
+
+        summary = None
+        last_no_topview = None
+        for s in settings_queue:
+            with status_lock:
+                job = tracking_jobs.get(video_id, {})
+                job["current_setting"] = s.name
+                tracking_jobs[video_id] = job
+            try:
+                from analyzer import NoTopViewFoundException
+                summary = track_video(video_path, s, gs, folder, progress)
+                # Erfolg: das verwendete Setting wird als last_setting gespeichert
+                with db_conn() as c:
+                    c.execute("UPDATE videos SET last_setting = ? WHERE video_id = ?",
+                              (s.id, video_id))
+                break
+            except NoTopViewFoundException as e:
+                last_no_topview = e
+                print(f"[fallback] setting '{s.name}': {e}")
+                continue
+
+        if summary is None:
+            # Alle Settings durch, keines passte
+            msg = "no setting found top-view in video"
+            if last_no_topview:
+                msg += f" — {last_no_topview}"
+            raise RuntimeError(msg)
+
         clips_count = len(summary["clips"])
-        # Dauer kennen wir indirekt aus total_frames / fps
         duration_s = None
         if summary.get("total_frames") and summary.get("fps"):
             try:
@@ -650,11 +708,11 @@ def api_track_cancel():
     data = request.get_json(force=True)
     vid = data.get("video_id")
     if not vid:
-        return jsonify({"error": "video_id fehlt"}), 400
+        return jsonify({"error": "video_id missing"}), 400
     with status_lock:
         job = tracking_jobs.get(vid)
         if not job or job.get("status") != "running":
-            return jsonify({"error": "kein laufender job"}), 404
+            return jsonify({"error": "no running job"}), 404
         job["cancel"] = True
         tracking_jobs[vid] = job
     return jsonify({"ok": True})
@@ -696,6 +754,64 @@ def index():
 
 # ---- Channel/Browse -----------------------------------------------------
 
+@app.post("/api/import-local")
+def api_import_local():
+    """Importiert eine lokale Video-Datei. Die Datei bleibt am Original-Ort,
+    nur ein Output-Ordner mit Thumbnail und ein DB-Eintrag werden angelegt.
+    Body: {path: "C:/path/to/video.mp4"}
+    """
+    import hashlib
+    data = request.get_json(force=True)
+    raw = (data.get("path") or "").strip()
+    # Pasted Pfade haben oft Quotes drum
+    raw = raw.strip('"').strip("'")
+    if not raw:
+        return jsonify({"error": "path missing"}), 400
+    p = Path(raw)
+    if not p.exists() or not p.is_file():
+        return jsonify({"error": f"file not found: {raw}"}), 404
+
+    # Stabile video_id aus absolutem Pfad
+    abs_str = str(p.resolve())
+    digest = hashlib.md5(abs_str.encode("utf-8")).hexdigest()[:12]
+    video_id = f"local_{digest}"
+
+    # Duplikat-Check
+    with db_conn() as c:
+        existing = c.execute("SELECT video_id, folder FROM videos WHERE video_id = ?",
+                             (video_id,)).fetchone()
+    if existing:
+        return jsonify({"error": "already imported", "video_id": video_id}), 400
+
+    stem = p.stem
+    safe_stem = sanitize_title(stem, max_len=40)
+    folder = get_download_dir() / f"{time.strftime('%Y-%m-%d')}_{safe_stem}_{video_id}"
+    folder.mkdir(parents=True, exist_ok=True)
+
+    duration = get_video_duration_s(str(p))
+
+    # Thumbnail
+    thumb_path = folder / "_thumb.jpg"
+    generate_video_thumbnail(str(p), str(thumb_path), seconds_before_end=0.5)
+
+    with db_conn() as c:
+        c.execute("""
+            INSERT INTO videos
+            (video_id, title, title_en, channel, url, date, folder, video_path,
+             added_at, last_setting, duration_s, clips_count, last_tracked_at)
+            VALUES (?, ?, NULL, '(local file)', NULL, ?, ?, ?, ?, NULL, ?, 0, NULL)
+        """, (video_id, stem, time.strftime("%Y-%m-%d"), str(folder), str(p),
+              time.strftime("%Y-%m-%d %H:%M:%S"), duration))
+
+    return jsonify({
+        "ok": True,
+        "video_id": video_id,
+        "title": stem,
+        "folder": str(folder),
+        "duration_s": duration,
+    })
+
+
 @app.post("/api/video-info")
 def api_video_info():
     """Holt Metadaten fuer EINE Video-URL. Liefert Video-Dict im selben Format
@@ -704,14 +820,14 @@ def api_video_info():
     data = request.get_json(force=True)
     url = (data.get("url") or "").strip()
     if not url:
-        return jsonify({"error": "url fehlt"}), 400
+        return jsonify({"error": "url missing"}), 400
     try:
         opts = {"quiet": True, "skip_download": True}
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
         vid = info.get("id")
         if not vid:
-            return jsonify({"error": "konnte video-id nicht ermitteln"}), 400
+            return jsonify({"error": "could not determine video id"}), 400
         out = {
             "video_id": vid,
             "title": info.get("title") or "",
@@ -743,7 +859,7 @@ def api_channel():
     limit = int(data.get("limit", 30))
     offset = int(data.get("offset", 0))
     if not url:
-        return jsonify({"error": "url fehlt"}), 400
+        return jsonify({"error": "url missing"}), 400
     try:
         if url.startswith("@"):
             url = f"https://www.youtube.com/{url}/videos"
@@ -793,7 +909,7 @@ def api_download():
     videos = data.get("videos") or []
     auto_track_setting = data.get("auto_track_setting")  # optional
     if not videos:
-        return jsonify({"error": "keine videos"}), 400
+        return jsonify({"error": "no videos"}), 400
     with status_lock:
         for v in videos:
             if not v.get("video_id"):
@@ -864,10 +980,56 @@ def api_history_delete():
     data = request.get_json(force=True)
     vid = data.get("video_id")
     if not vid:
-        return jsonify({"error": "video_id fehlt"}), 400
+        return jsonify({"error": "video_id missing"}), 400
     with db_conn() as c:
         c.execute("DELETE FROM videos WHERE video_id = ?", (vid,))
     return jsonify({"ok": True})
+
+
+@app.post("/api/clip/delete")
+def api_clip_delete():
+    """Loescht einen oder mehrere Clips aus dem Video-Ordner.
+    Body: {video_id, clip_names: [...]}  -> jeder name ist "clipNN" (ohne Endung).
+    Loescht clipNN.mp4, clipNN.json, clipNN_thumb.jpg.
+    Aktualisiert clips_count in der DB.
+    """
+    data = request.get_json(force=True)
+    vid = data.get("video_id")
+    names = data.get("clip_names") or []
+    if not vid or not names:
+        return jsonify({"error": "video_id or clip_names missing"}), 400
+    with db_conn() as c:
+        row = c.execute("SELECT folder FROM videos WHERE video_id = ?", (vid,)).fetchone()
+    if not row:
+        return jsonify({"error": "video not found"}), 404
+    folder = Path(row["folder"])
+    if not folder.exists():
+        return jsonify({"error": "folder not found"}), 404
+
+    deleted = []
+    failed = []
+    for name in names:
+        # Sicherheits-Check: keine Pfad-Traversal, nur clipNN-Pattern
+        if not name.startswith("clip") or "/" in name or "\\" in name or ".." in name:
+            failed.append(name)
+            continue
+        for suffix in (".mp4", ".json", "_thumb.jpg"):
+            p = folder / f"{name}{suffix}"
+            try:
+                if p.exists():
+                    p.unlink()
+            except Exception as e:
+                print(f"[clip-delete] {p}: {e}")
+        deleted.append(name)
+
+    # DB clips_count aktualisieren
+    new_count = count_clips_in_folder(str(folder))
+    with db_conn() as c:
+        c.execute("UPDATE videos SET clips_count = ? WHERE video_id = ?",
+                  (new_count, vid))
+
+    return jsonify({"ok": True, "deleted": deleted, "failed": failed,
+                    "clips_count": new_count})
 
 
 @app.post("/api/rescan")
@@ -883,7 +1045,7 @@ def api_video_folder(vid: str):
     with db_conn() as c:
         row = c.execute("SELECT folder FROM videos WHERE video_id = ?", (vid,)).fetchone()
     if not row:
-        return jsonify({"error": "nicht gefunden"}), 404
+        return jsonify({"error": "not found"}), 404
     folder = Path(row["folder"])
     if not folder.exists():
         return jsonify({"files": []})
@@ -905,11 +1067,11 @@ def api_file(vid: str, filename: str):
     with db_conn() as c:
         row = c.execute("SELECT folder FROM videos WHERE video_id = ?", (vid,)).fetchone()
     if not row:
-        return ("nicht gefunden", 404)
+        return ("not found", 404)
     folder = Path(row["folder"])
     fp = folder / filename
     if not fp.exists() or not fp.is_file():
-        return ("nicht gefunden", 404)
+        return ("not found", 404)
     return send_file(fp)
 
 
@@ -918,7 +1080,7 @@ def api_preview(vid: str):
     with db_conn() as c:
         row = c.execute("SELECT folder FROM videos WHERE video_id = ?", (vid,)).fetchone()
     if not row:
-        return ("nicht gefunden", 404)
+        return ("not found", 404)
     pp = Path(row["folder"]) / "_preview.jpg"
     if not pp.exists():
         return ("kein preview", 404)
@@ -936,7 +1098,7 @@ def api_thumb(vid: str):
         row = c.execute("SELECT folder, video_path FROM videos WHERE video_id = ?",
                         (vid,)).fetchone()
     if not row:
-        return ("nicht gefunden", 404)
+        return ("not found", 404)
     folder = Path(row["folder"]) if row["folder"] else None
     if not folder:
         return ("kein ordner", 404)
@@ -968,7 +1130,7 @@ def api_settings_list():
 def api_settings_get(sid: str):
     s = get_setting(sid)
     if s is None:
-        return jsonify({"error": "nicht gefunden"}), 404
+        return jsonify({"error": "not found"}), 404
     return jsonify({"setting": s.to_dict()})
 
 
@@ -1009,7 +1171,7 @@ def api_editor_sample_color():
     data = request.get_json(force=True)
     frame = decode_b64_frame(data.get("frame_b64"))
     if frame is None:
-        return jsonify({"error": "kein frame"}), 400
+        return jsonify({"error": "no frame"}), 400
     x = int(data.get("x", 0))
     y = int(data.get("y", 0))
     hex_str = sample_color_at(frame, x, y)
@@ -1022,10 +1184,10 @@ def api_editor_sample_felt():
     data = request.get_json(force=True)
     frame = decode_b64_frame(data.get("frame_b64"))
     if frame is None:
-        return jsonify({"error": "kein frame"}), 400
+        return jsonify({"error": "no frame"}), 400
     corners = data.get("corners") or []
     if len(corners) != 4:
-        return jsonify({"error": "4 ecken benoetigt"}), 400
+        return jsonify({"error": "4 corners required"}), 400
     hex_str = sample_color_at_polygon_center(frame, corners)
     return jsonify({"hex": hex_str})
 
@@ -1047,15 +1209,15 @@ def api_setup_detect():
     data = request.get_json(force=True)
     frame = decode_b64_frame(data.get("frame_b64"))
     if frame is None:
-        return jsonify({"error": "kein frame"}), 400
+        return jsonify({"error": "no frame"}), 400
 
     setting_data = data.get("setting") or {}
     corners = setting_data.get("table_corners") or []
     ball_hexes = setting_data.get("ball_colors_hex") or []
     if len(corners) != 4:
-        return jsonify({"error": "tisch-ecken unvollstaendig"}), 400
+        return jsonify({"error": "table corners incomplete"}), 400
     if len(ball_hexes) != 3:
-        return jsonify({"error": "ball-farben unvollstaendig"}), 400
+        return jsonify({"error": "ball colors incomplete"}), 400
 
     # Eingehender Tracking-State (null beim ersten Call oder nach Reset)
     ts_in = data.get("tracking_state") or {}
@@ -1076,7 +1238,7 @@ def api_setup_detect():
         # 2) Rektifiziertes Bild immer rendern (User soll sehen was die Kamera sieht)
         H = compute_homography(corners)
         if H is None:
-            return jsonify({"error": "homographie fehlgeschlagen"}), 400
+            return jsonify({"error": "homography failed"}), 400
         rectified = rectify_frame(frame, H)
 
         felt_hex = setting_data.get("felt_color_hex", "#1c5f3a")
@@ -1088,7 +1250,7 @@ def api_setup_detect():
         # JPEG vom rektifizierten Bild
         ok, buf = cv2.imencode(".jpg", rectified, [cv2.IMWRITE_JPEG_QUALITY, 75])
         if not ok:
-            return jsonify({"error": "encode fehlgeschlagen"}), 500
+            return jsonify({"error": "encode failed"}), 500
         b64 = base64.b64encode(buf.tobytes()).decode("ascii")
 
         # Out-State (wird beim Tisch-weg unveraendert zurueckgegeben)
@@ -1282,10 +1444,10 @@ def api_track():
     vid = data.get("video_id")
     sid = data.get("setting_id")
     if not vid or not sid:
-        return jsonify({"error": "video_id und setting_id erforderlich"}), 400
+        return jsonify({"error": "video_id and setting_id required"}), 400
     ok = start_tracking(vid, sid)
     if not ok:
-        return jsonify({"error": "Tracking laeuft bereits fuer dieses Video"}), 409
+        return jsonify({"error": "tracking already running for this video"}), 409
     return jsonify({"ok": True})
 
 
