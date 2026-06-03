@@ -17,6 +17,7 @@ const state = {
     activeSettingId: null,
     pollTimer: null,
     previewTimers: {},      // video_id -> intervalId für live-preview
+    lastTrackingStatus: {}, // video_id -> letzter Status zum Wechsel-erkennen
     // Setup state
     currentFrame: null,     // { b64, width, height, naturalWidth, naturalHeight }
     clickMode: "none",      // "none" | "corners" | "balls"
@@ -322,16 +323,28 @@ $("btn-clear-done").addEventListener("click", async () => {
 });
 
 function renderTrackingStatus(jobs) {
+    // Status-Übergänge erkennen → Archive neu laden bei Wechsel auf done/cancelled
+    for (const [vid, job] of Object.entries(jobs)) {
+        const prev = state.lastTrackingStatus[vid];
+        if (prev === "running" && (job.status === "done" || job.status === "cancelled")) {
+            loadHistory();
+        }
+        state.lastTrackingStatus[vid] = job.status;
+    }
+
     // Aktiver Job hat Vorrang. Wenn mehrere laufen, zeigen wir den ersten "running",
     // sonst den ersten "done" der noch nicht weggeklickt wurde, sonst nichts.
     const entries = Object.entries(jobs);
     const running = entries.find(([_, j]) => j.status === "running");
     const focusEntry = running || entries.find(([_, j]) => j.status === "done")
-                                  || entries.find(([_, j]) => j.status === "error");
+                                  || entries.find(([_, j]) => j.status === "error")
+                                  || entries.find(([_, j]) => j.status === "cancelled");
 
     const panel = $("live-tracking-panel");
+    const cancelBtn = $("btn-cancel-tracking");
     if (!focusEntry) {
         panel.classList.add("hidden");
+        cancelBtn.classList.add("hidden");
         stopAllPreviewPolling();
         return;
     }
@@ -348,15 +361,24 @@ function renderTrackingStatus(jobs) {
     if (job.status === "running") {
         statusEl.textContent = "läuft";
         statusEl.className = "muted small status-running";
+        cancelBtn.classList.remove("hidden");
+        cancelBtn.dataset.vid = vid;
     } else if (job.status === "done") {
         statusEl.textContent = "fertig";
         statusEl.className = "muted small status-done";
+        cancelBtn.classList.add("hidden");
     } else if (job.status === "error") {
         statusEl.textContent = "fehler";
         statusEl.className = "muted small status-error";
+        cancelBtn.classList.add("hidden");
+    } else if (job.status === "cancelled") {
+        statusEl.textContent = "abgebrochen";
+        statusEl.className = "muted small";
+        cancelBtn.classList.add("hidden");
     } else {
         statusEl.textContent = job.status || "";
         statusEl.className = "muted small";
+        cancelBtn.classList.add("hidden");
     }
 
     // Phase
@@ -526,8 +548,9 @@ function fillClipsArea(v) {
     });
     html += "</div>";
     panel.innerHTML = html;
-    panel.querySelectorAll(".clip-card").forEach(card => {
+    panel.querySelectorAll(".clip-card").forEach((card, idx) => {
         card.addEventListener("click", () => {
+            setPlayerContext(v.video_id, v.clips, idx);
             playArchiveFile(card.dataset.vid, card.dataset.clip, card.dataset.clipname);
         });
     });
@@ -561,6 +584,7 @@ async function playArchiveVideo(v) {
         alert("keine video-datei gefunden");
         return;
     }
+    clearPlayerContext();
     playArchiveFile(v.video_id, vfile.name, v.title_en || v.title || v.video_id);
 }
 
@@ -572,13 +596,76 @@ function playArchiveFile(vid, filename, title) {
     vp.src = `/api/file/${vid}/${encodeURIComponent(filename)}`;
     vp.load();
     $("modal-player").classList.remove("hidden");
-    // Autoplay bei dynamisch geaenderter src ist Browser-policy-abhaengig.
-    // Wir versuchen es explizit; wenn der Browser blockt, sieht der User halt
-    // den Play-Knopf in den Controls.
     vp.play().catch(err => {
         console.debug("autoplay blocked:", err);
     });
 }
+
+// Player-Kontext: welche Clip-Liste gerade durchnavigiert wird, und an welcher
+// Stelle wir sind. Wird beim Aufruf des Players gesetzt; ohne Kontext sind die
+// Prev/Next-Buttons disabled.
+function setPlayerContext(vid, clips, currentIndex) {
+    state.playerContext = {
+        vid,
+        clips: clips || [],
+        currentIndex: currentIndex,
+    };
+    updatePlayerNavButtons();
+}
+
+function clearPlayerContext() {
+    state.playerContext = null;
+    updatePlayerNavButtons();
+}
+
+function updatePlayerNavButtons() {
+    const ctx = state.playerContext;
+    const prev = $("player-prev");
+    const next = $("player-next");
+    if (!ctx || !ctx.clips || ctx.clips.length <= 1) {
+        prev.disabled = true;
+        next.disabled = true;
+        return;
+    }
+    prev.disabled = ctx.currentIndex <= 0;
+    next.disabled = ctx.currentIndex >= ctx.clips.length - 1;
+}
+
+function playPlayerNav(delta) {
+    const ctx = state.playerContext;
+    if (!ctx) return;
+    const newIdx = ctx.currentIndex + delta;
+    if (newIdx < 0 || newIdx >= ctx.clips.length) return;
+    ctx.currentIndex = newIdx;
+    const c = ctx.clips[newIdx];
+    playArchiveFile(ctx.vid, c.mp4, c.name);
+    updatePlayerNavButtons();
+}
+
+// Cancel-Tracking-Button
+document.addEventListener("DOMContentLoaded", () => {
+    const cancelBtn = document.getElementById("btn-cancel-tracking");
+    if (cancelBtn) {
+        cancelBtn.addEventListener("click", async () => {
+            const vid = cancelBtn.dataset.vid;
+            if (!vid) return;
+            if (!confirm("tracking abbrechen?")) return;
+            try {
+                await fetch("/api/track/cancel", {
+                    method: "POST",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({video_id: vid}),
+                });
+            } catch (e) {
+                console.error(e);
+            }
+        });
+    }
+    const prevBtn = document.getElementById("player-prev");
+    const nextBtn = document.getElementById("player-next");
+    if (prevBtn) prevBtn.addEventListener("click", () => playPlayerNav(-1));
+    if (nextBtn) nextBtn.addEventListener("click", () => playPlayerNav(1));
+});
 
 // Beim Schliessen des Players: src clearen damit es nicht weiterspielt
 document.addEventListener("click", (ev) => {

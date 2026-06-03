@@ -585,6 +585,8 @@ def run_tracking(video_id: str, setting_id: str):
     def progress(phase: str, current: int, total: int, ranges_so_far=None):
         with status_lock:
             job = tracking_jobs.get(video_id, {})
+            if job.get("cancel"):
+                raise RuntimeError("CANCELLED_BY_USER")
             job["phase"] = phase
             job["current"] = current
             job["total"] = total
@@ -626,12 +628,36 @@ def run_tracking(video_id: str, setting_id: str):
             }
     except Exception as e:
         import traceback
-        traceback.print_exc()
-        with status_lock:
-            tracking_jobs[video_id] = {
-                "status": "error", "error": str(e), "phase": "",
-                "current": 0, "total": 0, "clips_found": 0,
-            }
+        if "CANCELLED_BY_USER" in str(e):
+            with status_lock:
+                tracking_jobs[video_id] = {
+                    "status": "cancelled", "phase": "cancelled",
+                    "current": 0, "total": 0, "clips_found": 0,
+                }
+        else:
+            traceback.print_exc()
+            with status_lock:
+                tracking_jobs[video_id] = {
+                    "status": "error", "error": str(e), "phase": "",
+                    "current": 0, "total": 0, "clips_found": 0,
+                }
+
+
+@app.post("/api/track/cancel")
+def api_track_cancel():
+    """Setzt das Cancel-Flag fuer einen laufenden Tracking-Job. Der Job
+    bricht beim naechsten progress-cb-Aufruf sauber ab."""
+    data = request.get_json(force=True)
+    vid = data.get("video_id")
+    if not vid:
+        return jsonify({"error": "video_id fehlt"}), 400
+    with status_lock:
+        job = tracking_jobs.get(vid)
+        if not job or job.get("status") != "running":
+            return jsonify({"error": "kein laufender job"}), 404
+        job["cancel"] = True
+        tracking_jobs[vid] = job
+    return jsonify({"ok": True})
 
 
 def start_tracking(video_id: str, setting_id: str) -> bool:

@@ -536,8 +536,11 @@ def split_tracks_into_subclips(tracks: dict, fps: float, gs: GlobalSettings,
 
     Logik:
     - Stillstand-Phasen markieren die Punkte zwischen denen ein Stoss passiert.
-    - Sub-Clip-Start = Ende der vorigen Stillstand-Phase (oder Range-Anfang).
-    - Sub-Clip-Ende = Anfang der naechsten Stillstand-Phase (oder Range-Ende).
+    - Sub-Clip-Start = bis zu LOOKBACK_S vor dem Ende der vorigen Stillstand-Phase
+      (so weit die Stillstand-Phase zurueckreicht). Dadurch hat der Clip immer
+      eine kurze Ruhe-Phase am Anfang, in der die Start-Positionen sauber
+      gemittelt werden koennen.
+    - Sub-Clip-Ende = Anfang der naechsten Stillstand-Phase.
     - Wenn keine Stillstandsphasen gefunden werden: ein Sub-Clip = ganzer Range.
 
     Returns: Liste von {start_frame, end_frame, has_pre_stillness, has_post_stillness}
@@ -546,29 +549,33 @@ def split_tracks_into_subclips(tracks: dict, fps: float, gs: GlobalSettings,
     if range_n_frames <= 0:
         return []
     f_min, f_max = 0, range_n_frames - 1
+    LOOKBACK_S = 1.0
+    lookback_frames = max(1, int(round(LOOKBACK_S * fps)))
 
     periods = find_stillness_periods(tracks, fps, gs)
     boundaries: list[tuple[int, int, bool, bool]] = []
 
     if not periods:
-        # Keine Stillstaende erkannt: ganzer Range ist ein Clip
         return [{"start_frame": f_min, "end_frame": f_max,
                  "has_pre_stillness": False, "has_post_stillness": False}]
 
-    # Vor erster Periode (falls Range nicht damit beginnt)
+    # Vor erster Periode (Range fängt mit Bewegung an - kein Lookback möglich)
     if f_min < periods[0][0]:
         boundaries.append((f_min, periods[0][0], False, True))
 
-    # Zwischen den Perioden
+    # Zwischen den Perioden — Start mit Lookback in die vorige Stillstands-Phase hinein
     for i in range(len(periods) - 1):
-        sub_start = periods[i][1]      # Ende der vorigen Stillstand-Phase
-        sub_end = periods[i + 1][0]    # Anfang der naechsten
+        period_start, period_end = periods[i]
+        sub_start = max(period_start, period_end - lookback_frames)
+        sub_end = periods[i + 1][0]
         if sub_end > sub_start:
             boundaries.append((sub_start, sub_end, True, True))
 
-    # Nach letzter Periode (falls Range nicht damit endet)
+    # Nach letzter Periode (Range endet ohne Stillstand)
     if periods[-1][1] < f_max:
-        boundaries.append((periods[-1][1], f_max, True, False))
+        period_start, period_end = periods[-1]
+        sub_start = max(period_start, period_end - lookback_frames)
+        boundaries.append((sub_start, f_max, True, False))
 
     return [
         {"start_frame": s, "end_frame": e,
