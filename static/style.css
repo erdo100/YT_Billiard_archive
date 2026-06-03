@@ -1013,3 +1013,27 @@ main {
     .history-preview { width: 100px; height: 56px; }
     .video-thumb { width: 80px; height: 45px; }
 }
+
+/* Help modal content formatting */
+#modal-help .modal-content h4 {
+    margin: 1em 0 0.3em 0;
+    color: var(--accent);
+    font-weight: 500;
+}
+#modal-help .modal-content p {
+    margin: 0.5em 0;
+}
+#modal-help .modal-content ul, 
+#modal-help .modal-content ol {
+    margin: 0.5em 0 0.5em 1.5em;
+}
+#modal-help .modal-content code {
+    background: var(--bg-3);
+    padding: 0.1rem 0.3rem;
+    border-radius: 3px;
+    font-size: 0.9em;
+    color: var(--gold);
+}
+#modal-help .modal-content li {
+    margin: 0.2em 0;
+}

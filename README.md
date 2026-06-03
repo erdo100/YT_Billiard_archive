@@ -1,153 +1,145 @@
-# yt::archive
+# YT Billiard Archive
 
-Lokale Web-App zum YouTube-Download und Carambol-Billard-Tracking. Läuft auf
-`127.0.0.1:5000`, keine Cloud, keine Telemetrie.
+Local web app for YouTube download and carambol billiard tracking. Runs on
+127.0.0.1:5000, no cloud, no telemetry.
 
-## Was sie kann
+## What it can do
 
-- YouTube-Kanäle durchsuchen und Videos batch-downloaden (`yt-dlp`)
-- Pro Kamera-Winkel ein **Setting** anlegen (Tisch-Ecken + Ball-Farben durch
-  Klicks im Browser definieren)
-- Videos tracken: Bewegung der drei Carambol-Bälle Frame für Frame, automatisch
-  in Clips (eine Position = ein Clip) zerlegt
-- Pro Clip ein rektifizierter Top-Down-MP4 plus JSON mit allen Positionen
+- Browse YouTube channels and batch-download videos (yt-dlp)
+- Create one setting per camera angle (define table corners + ball colors
+  by clicking in the browser)
+- Track videos: movement of the three carambol balls frame by frame, automatically
+  split into clips (one shot = one clip)
+- For each clip, a rectified top-down MP4 plus JSON with all positions
 
-## Setup (Windows, Empfehlung)
+## Setup (Windows, recommended)
 
-```powershell
-# Verzeichnis anlegen, z.B. D:\Programming\yt_archive
-cd D:\Programming\yt_archive
+    # Create directory, e.g. D:\Programming\yt_archive
+    cd D:\Programming\yt_archive
 
-# Virtual env
-python -m venv .venv
-.venv\Scripts\activate
+    # Virtual env
+    python -m venv .venv
+    .venv\Scripts\activate
 
-# Dependencies
-pip install -r requirements.txt
+    # Dependencies
+    pip install -r requirements.txt
 
-# ffmpeg (für yt-dlp Video+Audio-Merging)
-winget install Gyan.FFmpeg
-# danach Terminal neu starten damit ffmpeg im PATH ist
+    # ffmpeg (for yt-dlp video+audio merging)
+    winget install Gyan.FFmpeg
+    # restart the terminal afterwards so ffmpeg is in PATH
 
-# Start
-python app.py
-```
+    # Start
+    python app.py
 
-Öffnet sich automatisch im Browser. Daten liegen in `~/.yt_archive/`
-(Settings, Global-Parameter, History-DB).
+It will automatically open in your browser. Data is stored in ~/.yt_archive/
+(settings, global parameters, history DB).
 
 ## Workflow
 
 ### 1. Download
 
-Tab **browse** → Kanal-URL oder `@handle` eingeben → laden → Videos
-auswählen → `↓ download`. Fortschritt im Tab **queue**.
+Tab browse -> enter channel URL or @handle -> load -> select videos ->
+↓ download. Progress in the queue tab.
 
-Heruntergeladene Videos landen unter `~/Downloads/YouTube/YYMMDD/YYMMDD_NN_titel_VIDEOID/`
-(Ordner-Pfad lässt sich in der Config ändern, oben rechts ⚙ config).
+Downloaded videos are placed in ~/Downloads/YouTube/YYMMDD/YYMMDD_NN_title_VIDEOID/
+(the folder path can be changed in the config, top-right ⚙ config).
 
-### 2. Setting anlegen
+### 2. Create a setting
 
-Tab **setup** → `+ neu` → Name vergeben.
+Tab setup -> + new -> give it a name.
 
-Im Editor:
-1. **Referenz-Video wählen** aus der History.
-2. Im Video-Player zu einer Stelle springen wo der Tisch gut sichtbar ist
-   (Top-Down-View, keine Spieler davor) → **frame greifen**.
-3. **tisch-ecken setzen** klicken → im Canvas die 4 Ecken nacheinander
-   anklicken in dieser Reihenfolge: **TL, TR, BR, BL** (oben-links,
-   oben-rechts, unten-rechts, unten-links). Nach dem 4. Klick wird die
-   Filz-Farbe automatisch aus dem Polygon-Zentrum gesampelt.
-4. **ball-farben setzen** klicken → drei Bälle in der Reihenfolge
-   **weiss, gelb, rot** anklicken. Pro Klick wird ein 5×5-Median um den
-   Klick-Punkt gesampelt.
-5. **speichern**.
+In the editor:
+1. Choose a reference video from the archive.
+2. In the video player, go to a frame where the table is clearly visible
+   (top-down view, no players in front) -> grab frame.
+3. Click set table corners -> in the canvas click the 4 corners in order:
+   TL, TR, BR, BL (top-left, top-right, bottom-right, bottom-left).
+   After the 4th click, the felt colour is automatically sampled from the
+   polygon centre.
+4. Click set ball colors -> click the three balls in order
+   white, yellow, red. Each click samples a 5×5 median around the click point.
+5. Save.
 
-Ein Setting wird nur als "fertig" markiert (✓ in der Sidebar) wenn alle
-4 Ecken und 3 Ball-Farben gesetzt sind. Unvollständige Settings können
-nicht zum Tracken benutzt werden.
+A setting is marked as "complete" (✓ in the sidebar) only when all
+4 corners and 3 ball colours are set. Incomplete settings cannot be used for tracking.
 
-### 3. Tracken
+### 3. Track
 
-Tab **history** → bei einem Video auf `tracken` klicken → Setting wählen →
-`starten`. Live-Preview im Vorschaubild des History-Eintrags. Status
-unten im Panel "tracking-status".
+Tab history -> click track on a video -> choose a setting ->
+start. Live preview in the history entry's thumbnail. Status shown in the
+"tracking-status" panel below.
 
-Ergebnis pro Clip in `<video-folder>/`:
-- `clip01.mp4` — rektifizierter Top-Down-Tisch (1420×710 px) mit
-  Ball-Markern und 30-Frame-Trail
-- `clip01.json` — Frame-für-Frame Positionen aller drei Bälle
-- `_preview.jpg` — letztes Update während des Trackings
+Result per clip in <video-folder>/:
+- clip01.mp4 — rectified top-down table (1420×710 px) with
+  ball markers and a 30-frame trail
+- clip01.json — frame-by-frame positions of all three balls
+- _preview.jpg — latest update during tracking
 
-## Tracking-Algorithmus (Pivot-basiert)
+## Tracking algorithm (pivot-based)
 
-Das wichtige Teil. Funktioniert in **zwei Pässen**:
+The important part. Works in two passes:
 
-### Pass 1 — Clip-Bereiche finden
+### Pass 1 — find clip ranges
 
-Streaming durchs Video, pro Frame ein 9-Punkt-Filz-Sample im
-Setup-Polygon. Wenn genug Punkte (≥ `felt_detect_pct` %) Filz-Farbe haben,
-zählt der Frame als "Tisch sichtbar". Zusammenhängende Bereiche werden
-zu Clip-Kandidaten (Lücken bis `max_gap_frames` werden überbrückt,
-Bereiche kürzer als `min_clip_frames` verworfen).
+Streaming through the video, per frame a 9-point felt sample inside the
+setup polygon. If enough points (>= felt_detect_pct %) match the felt colour,
+the frame counts as "table visible". Contiguous ranges become clip candidates
+(gaps up to max_gap_frames are bridged, ranges shorter than min_clip_frames
+are discarded).
 
-### Pass 2 — Pivot-Init + bidirektionales Tracking
+### Pass 2 — pivot init + bidirectional tracking
 
-Pro Clip-Bereich:
+Per clip range:
 
-1. Frames in JPEG-komprimierter Form in Memory laden (≈ 200 KB pro
-   1080p-Frame).
-2. **Pivot-Suche**: alle `init_sample_interval_s` Sekunden ein Sample. Pro
-   Sample ein Init-Quality-Score:
-   ```
-   score = felt_pct                                # mehr Filz = weniger Spieler/Hand
-         - ball_match_dist × 0.5                   # bessere Ball-Farben-Treffer
-         - (anzahl_blobs - 3) × 10                 # weniger Extra-Blobs = sauberer
-   ```
-   Voraussetzung: `felt_pct ≥ init_min_felt_pct` UND drei plausible Bälle.
-   Pivot = Sample mit höchstem Score.
-3. **Bidirektional tracken**: vom Pivot aus vorwärts bis Clip-Ende, dann
-   rückwärts bis Clip-Anfang. Pro Frame, pro Ball:
-   - Suche-Radius = `v_max_mps / fps × 500 px/m` (z.B. ~117 px bei
-     7 m/s @ 30 fps)
-   - Kandidaten = Blobs im Filz-Loch in Reichweite
-   - Score = Distanz + Farb-Distanz zur Tracking-Farbe (EMA-Update,
-     hart gebunden an die Setup-Farbe)
-4. Output schreiben (MP4 + JSON).
+1. Load frames into memory as JPEGs (≈ 200 KB per 1080p frame).
+2. Pivot search: sample every init_sample_interval_s seconds. For each
+   sample, an init quality score:
 
-Wenn kein sauberer Pivot in einem Bereich gefunden wird (z.B. Spieler
-die ganze Zeit am Tisch), wird der Bereich übersprungen und im
-Status-Panel als "skipped" geloggt.
+   score = felt_pct                                # more felt = fewer players/hands
+         - ball_match_dist × 0.5                   # better ball colour match
+         - (number_of_blobs - 3) × 10              # fewer extra blobs = cleaner
 
-## Globale Tracking-Parameter
+   Prerequisites: felt_pct >= init_min_felt_pct AND three plausible balls.
+   Pivot = sample with highest score.
+3. Bidirectional tracking: from the pivot forward to the end of the clip,
+   then backward to the start. Per frame, per ball:
+   - Search radius = v_max_mps / fps × 500 px/m (e.g. ~117 px at 7 m/s @ 30 fps)
+   - Candidates = blobs inside the felt hole within range
+   - Score = distance + colour distance to tracking colour (EMA update,
+     hard-bound to the setup colour)
+4. Write output (MP4 + JSON).
 
-Über `⚙ global` oben rechts erreichbar. Defaults sind für PBA-artige
-Top-Down-Kameras passend; in der Regel muss man nichts ändern.
+If no clean pivot is found in a range (e.g. players are in front of the table
+the whole time), the range is skipped and logged as "skipped" in the status panel.
 
-| Parameter                 | Default | Bedeutung                                                              |
-|---------------------------|---------|------------------------------------------------------------------------|
-| `min_clip_frames`         | 25      | Clip wird verworfen wenn kürzer                                        |
-| `max_gap_frames`          | 15      | Tisch darf so viele Frames "weg" sein ohne dass der Clip endet         |
-| `felt_detect_pct`         | 60      | 9-Punkt-Quote ab der ein Frame als "Tisch sichtbar" gilt               |
-| `init_min_felt_pct`       | 70      | Pivot-Kandidat muss mindestens so viel Filz im rektifizierten Bild haben |
-| `init_sample_interval_s`  | 1.0     | Pivot-Suche: Sample-Abstand in Sekunden                                |
-| `preview_interval`        | 15      | `_preview.jpg` alle X Frames updaten (während Pass 1)                  |
-| `v_max_mps`               | 7.0     | Maximale Ballgeschwindigkeit → Such-Radius pro Frame                   |
-| `color_adaptation_rate`   | 0.2     | EMA-Alpha für Ball-Farbe (0 = nie anpassen, 1 = nur letzte messen)     |
-| `max_color_drift_bgr`     | 60      | Tracking-Farbe darf nie weiter als so weit von der Setup-Farbe driften |
-| `max_ball_lost_frames`    | 5       | Nach X verlorenen Frames wird der Such-Radius nicht weiter vergrößert  |
+## Global tracking parameters
 
-## Verzeichnis-Layout
+Accessible via ⚙ global at the top right. Defaults are suitable for PBA-style
+top-down cameras; usually you don't need to change anything.
 
-```
+Parameter                 | Default | Meaning
+--------------------------|---------|--------------------------------------------------
+min_clip_frames           | 25      | Clip is discarded if shorter
+max_gap_frames            | 15      | Table may be "gone" for this many frames without ending the clip
+felt_detect_pct           | 60      | 9-point quota for a frame to be considered "table visible"
+init_min_felt_pct         | 70      | Pivot candidate needs at least this much felt in the rectified image
+init_sample_interval_s    | 1.0     | Pivot search: sample every X seconds
+preview_interval          | 15      | Update _preview.jpg every X frames (during pass 1)
+v_max_mps                 | 7.0     | Maximum ball speed → search radius per frame
+color_adaptation_rate     | 0.2     | EMA alpha for ball colour (0 = never adapt, 1 = only last measurement)
+max_color_drift_bgr       | 60      | Tracking colour must never drift further from the setup colour
+max_ball_lost_frames      | 5       | After X lost frames, the search radius is not increased further
+
+## Directory layout
+
 ~/.yt_archive/
-├── history.db           # SQLite mit allen heruntergeladenen Videos
-├── settings.json        # Alle Tracking-Settings
-├── global.json          # Globale Tracking-Parameter
-└── config.json          # Download-Ordner-Pfad
+├── history.db           # SQLite with all downloaded videos
+├── settings.json        # All tracking settings
+├── global.json          # Global tracking parameters
+└── config.json          # Download folder path
 
-~/Downloads/YouTube/      # (konfigurierbar)
-└── 260301/               # YYMMDD vom Upload
+~/Downloads/YouTube/      # (configurable)
+└── 260301/               # YYMMDD of upload
     └── 260301_01_some_title_dQw4w9WgXcQ/
         ├── 260301_01_some_title_dQw4w9WgXcQ.mp4    # Original
         ├── _preview.jpg
@@ -155,24 +147,22 @@ Top-Down-Kameras passend; in der Regel muss man nichts ändern.
         ├── clip01.json
         ├── clip02.mp4
         └── clip02.json
-```
 
-## Annahmen / Grenzen
+## Assumptions / limitations
 
-- Genau **3 Bälle** Carambol-Standard (weiß, gelb, rot)
-- Top-Down-Kamera ist **fest** im Frame (sonst pro Winkel ein eigenes Setting)
-- Ein Setting matched auf einen Kamera-Winkel — wenn dein Kanal mehrere
-  benutzt, brauchst du mehrere Settings und musst sie pro Video selber
-  zuordnen.
-- Die Tisch-Maße sind Carambol-Standard (2.84 × 1.42 m) fest verdrahtet.
-  Für andere Tisch-Größen müsste man `TABLE_W_MM`/`TABLE_H_MM` in
-  `analyzer.py` anpassen.
-- Bei extrem schnellen Ball-Geschwindigkeiten (> `v_max_mps`) verliert das
-  Tracking den Ball. `v_max_mps` hochsetzen wenn nötig — kostet aber
-  Robustheit (mehr falsche Kandidaten in Reichweite).
+- Exactly 3 balls (white, yellow, red) – carambol standard
+- The top-down camera is fixed in the frame (otherwise create one setting per angle)
+- One setting matches one camera angle – if your channel uses multiple angles,
+  you need multiple settings and must assign them manually per video
+- The table dimensions are fixed to carambol standard (2.84 × 1.42 m).
+  For other table sizes you would need to change TABLE_W_MM/TABLE_H_MM
+  in analyzer.py.
+- At extremely high ball speeds (> v_max_mps) the tracker may lose the ball.
+  Increase v_max_mps if needed – but that costs robustness (more false
+  candidates within range).
 
-## Was es nicht (mehr) hat
+## What it no longer has
 
-Frühere Versionen hatten Quickscan, Auto-Profile-Matching, Auto-Tisch-Detection,
-Auto-Tune, Skip-Resolve. Alles raus. Aktueller Workflow ist:
-**4 Klicks für den Tisch, 3 Klicks für die Bälle, einmal speichern, fertig.**
+Earlier versions had quickscan, auto-profile matching, auto-table detection,
+auto-tune, skip-resolve. All removed. Current workflow is:
+4 clicks for the table, 3 clicks for the balls, save once – done.

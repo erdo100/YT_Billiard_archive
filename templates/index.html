@@ -2,13 +2,13 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>yt::archive — carambol tracking</title>
+<title>YT Billiard Archive — carambol tracking</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
 
 <header class="topbar">
-    <div class="brand">yt::archive</div>
+    <div class="brand">YT Billiard Archive</div>
     <nav class="nav">
         <button class="nav-btn active" data-view="browse">browse</button>
         <button class="nav-btn" data-view="queue">queue</button>
@@ -16,6 +16,7 @@
         <button class="nav-btn" data-view="setup">setup</button>
     </nav>
     <div class="topbar-actions">
+        <button id="btn-help" title="help">❔ help</button>
         <button id="btn-rescan" title="rescan local download folder">↻ rescan</button>
         <button id="btn-settings" title="settings">⚙ settings</button>
     </div>
@@ -252,6 +253,51 @@
 </main>
 
 <!-- ============= MODALS ============= -->
+
+<!-- Help Modal -->
+<div id="modal-help" class="modal hidden">
+    <div class="modal-content wide">
+        <h3>📖 YT Billiard Archive — Help</h3>
+        <div style="max-height: 70vh; overflow-y: auto; padding-right: 8px;">
+            <h4>Overview</h4>
+            <p>YT Billiard Archive downloads YouTube videos and tracks carambol billiard balls (white, yellow, red) in top-down camera views. It produces rectified bird's‑eye clips with JSON position data.</p>
+
+            <h4>Workflow (3 steps)</h4>
+            <ol>
+                <li><strong>Download videos</strong> – Use the <strong>browse</strong> tab to load a YouTube channel or paste a single video URL. Select videos and click <strong>↓ download</strong>. Progress appears in the <strong>queue</strong> tab.</li>
+                <li><strong>Create a tracking setting</strong> – Switch to <strong>setup</strong> → click <strong>+ new</strong>. Pick a reference video, grab a frame where the table is fully visible, then:
+                    <ul>
+                        <li>Set table corners (mode: <strong>set table corners</strong> → click 4 corners in order: <strong>TL, TR, BR, BL</strong>).</li>
+                        <li>Set ball colors (mode: <strong>set ball colors</strong> → click white, yellow, red balls).</li>
+                        <li>Save the setting (must show ✓ in sidebar).</li>
+                    </ul>
+                </li>
+                <li><strong>Track a video</strong> – Go to <strong>archive</strong>, find the video, click <strong>track</strong>, choose your setting, and start. The tracking panel shows live preview and progress. Results (clips + JSON) are stored in the video folder.</li>
+            </ol>
+
+            <h4>Video Player & Clips</h4>
+            <p>In the archive, click a video thumbnail to play the original. Click a clip card to play the rectified clip. Use prev/next buttons to navigate clips. You can delete clips individually or multi‑select and delete from the clips toolbar.</p>
+
+            <h4>Setup Editor – Live Preview</h4>
+            <p>After setting corners and ball colors, the <strong>live tracking preview</strong> shows the rectified top‑down view with real‑time ball detection and trails. Use frame‑step buttons (← →) or the video timeline to test your setting before running a full tracking job.</p>
+
+            <h4>Global Settings (⚙)</h4>
+            <p>Adjust tracking parameters like ball speed, color adaptation, stillness detection, and auto‑fallback settings. Defaults work for most PBA‑style top‑down cameras.</p>
+
+            <h4>Data Location</h4>
+            <ul>
+                <li>Download folder: <code>~/Downloads/YouTube/</code> (configurable in ⚙ settings)</li>
+                <li>App data (history, settings): <code>~/.yt_archive/</code></li>
+            </ul>
+
+            <h4>Need Help?</h4>
+            <p>Check the console (F12) for error messages. For full documentation see the <code>README.md</code> included with the application.</p>
+        </div>
+        <div class="modal-actions">
+            <button class="cancel" data-close-modal="modal-help">close</button>
+        </div>
+    </div>
+</div>
 
 <!-- Tracking modal -->
 <div id="modal-track" class="modal hidden">

@@ -1,5 +1,5 @@
 // =========================================================================
-// yt::archive frontend — radikal vereinfacht
+// YT Billiard Archive frontend — radikal vereinfacht
 // =========================================================================
 
 const $ = (id) => document.getElementById(id);
@@ -874,6 +874,14 @@ document.addEventListener("DOMContentLoaded", () => {
             alert("error: " + e.message);
         }
     });
+
+    // Help modal
+    const helpBtn = document.getElementById("btn-help");
+    if (helpBtn) {
+        helpBtn.addEventListener("click", () => {
+            document.getElementById("modal-help").classList.remove("hidden");
+        });
+    }
 });
 
 // Beim Schliessen des Players: src clearen damit es nicht weiterspielt
