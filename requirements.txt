@@ -1,0 +1,5 @@
+flask>=3.0
+yt-dlp>=2024.1.1
+opencv-python>=4.8
+numpy>=1.24
+deep-translator>=1.11

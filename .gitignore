@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+*.so
+
+# Venv
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Lokale Konfig (User-spezifisch)
+# Die Daten liegen sowieso in ~/.yt_archive, aber falls jemand
+# config-Symlinks ins Repo legt:
+*.local.json
+
+# Test-Outputs
+/test_output/
+/tmp/
