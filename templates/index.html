@@ -296,6 +296,26 @@
                 <label class="param-label">max ball lost frames</label>
                 <input type="number" data-gparam="max_ball_lost_frames" min="0" step="1">
             </div>
+
+            <div class="param" style="grid-column: 1 / -1; border-top: 1px solid var(--border); padding-top: 8px; margin-top: 8px;">
+                <strong style="color: var(--text);">clip-splitting / stillstands-detektion</strong>
+            </div>
+            <div class="param">
+                <label class="param-label">min clip-dauer (s) <span class="param-help">kuerzere clips werden verworfen</span></label>
+                <input type="number" data-gparam="min_clip_duration_s" min="0" step="0.5">
+            </div>
+            <div class="param">
+                <label class="param-label">stillstand: max bewegung (px) <span class="param-help">ueber das fenster gemessen</span></label>
+                <input type="number" data-gparam="stillness_max_window_px" min="0.5" step="0.5">
+            </div>
+            <div class="param">
+                <label class="param-label">stillstand: fenster (frames)</label>
+                <input type="number" data-gparam="stillness_window_frames" min="3" step="1">
+            </div>
+            <div class="param">
+                <label class="param-label">stillstand: min dauer (s) <span class="param-help">so lang muessen baelle ruhen</span></label>
+                <input type="number" data-gparam="stillness_min_duration_s" min="0.2" step="0.1">
+            </div>
         </div>
         <div class="modal-actions">
             <button class="cancel" data-close-modal="modal-global">abbrechen</button>

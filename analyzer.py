@@ -464,6 +464,134 @@ def blend_color_bounded(current: np.ndarray, measured: np.ndarray,
 
 # ---- Bidirektionales Tracking -------------------------------------------
 
+def find_stillness_periods(tracks: dict, fps: float,
+                           gs: GlobalSettings) -> list[tuple[int, int]]:
+    """Findet Frame-Bereiche in denen ALLE 3 Baelle ruhen.
+
+    Definition "Ball ruht in Frame i": ueber die letzten `stillness_window_frames`
+    Positionen (innerhalb von tracks) ist die Spannweite max./min. in x UND y
+    kleiner als `stillness_max_window_px`. None-Positionen werden uebersprungen;
+    falls zu wenige Datenpunkte im Fenster, gilt "nicht still" (konservativ).
+
+    Returns: Liste von (start_frame, end_frame) — beide Indizes inklusive,
+             im clip-internen Frame-System (0-basiert).
+    """
+    if not tracks:
+        return []
+    all_frames: set[int] = set()
+    for cls_data in tracks.values():
+        all_frames.update(fi for fi in cls_data.keys())
+    if not all_frames:
+        return []
+    f_min, f_max = min(all_frames), max(all_frames)
+
+    win = max(3, int(gs.stillness_window_frames or 10))
+    thresh = float(gs.stillness_max_window_px or 3.0)
+
+    def ball_still_at(cls_data: dict, i: int) -> bool:
+        positions = []
+        for j in range(max(f_min, i - win + 1), i + 1):
+            p = cls_data.get(j)
+            if p is not None:
+                positions.append(p)
+        if len(positions) < max(3, win // 2):  # Mindestens halbes Fenster, sonst unzuverlaessig
+            return False
+        xs = [p[0] for p in positions]
+        ys = [p[1] for p in positions]
+        return (max(xs) - min(xs) <= thresh) and (max(ys) - min(ys) <= thresh)
+
+    # Pro Frame: sind alle Baelle still?
+    still_per_frame: list[bool] = []
+    for i in range(f_min, f_max + 1):
+        all_still = all(ball_still_at(tracks[cls], i) for cls in BALL_CLASSES)
+        still_per_frame.append(all_still)
+
+    # Zusammenhaengende True-Bereiche extrahieren
+    min_dur_frames = max(2, int(round((gs.stillness_min_duration_s or 1.0) * fps)))
+    periods: list[tuple[int, int]] = []
+    in_run = False
+    run_start = 0
+    for idx, still in enumerate(still_per_frame):
+        frame_abs = f_min + idx
+        if still and not in_run:
+            in_run = True
+            run_start = frame_abs
+        elif (not still) and in_run:
+            in_run = False
+            run_end = frame_abs - 1
+            if (run_end - run_start + 1) >= min_dur_frames:
+                periods.append((run_start, run_end))
+    if in_run:
+        run_end = f_max
+        if (run_end - run_start + 1) >= min_dur_frames:
+            periods.append((run_start, run_end))
+
+    return periods
+
+
+def split_tracks_into_subclips(tracks: dict, fps: float, gs: GlobalSettings,
+                               range_n_frames: int
+                               ) -> list[dict]:
+    """Zerlegt einen getrackten Range in Sub-Clips an Stillstands-Phasen.
+
+    Logik:
+    - Stillstand-Phasen markieren die Punkte zwischen denen ein Stoss passiert.
+    - Sub-Clip-Start = Ende der vorigen Stillstand-Phase (oder Range-Anfang).
+    - Sub-Clip-Ende = Anfang der naechsten Stillstand-Phase (oder Range-Ende).
+    - Wenn keine Stillstandsphasen gefunden werden: ein Sub-Clip = ganzer Range.
+
+    Returns: Liste von {start_frame, end_frame, has_pre_stillness, has_post_stillness}
+             im clip-internen Frame-System (0-basiert, end inklusive).
+    """
+    if range_n_frames <= 0:
+        return []
+    f_min, f_max = 0, range_n_frames - 1
+
+    periods = find_stillness_periods(tracks, fps, gs)
+    boundaries: list[tuple[int, int, bool, bool]] = []
+
+    if not periods:
+        # Keine Stillstaende erkannt: ganzer Range ist ein Clip
+        return [{"start_frame": f_min, "end_frame": f_max,
+                 "has_pre_stillness": False, "has_post_stillness": False}]
+
+    # Vor erster Periode (falls Range nicht damit beginnt)
+    if f_min < periods[0][0]:
+        boundaries.append((f_min, periods[0][0], False, True))
+
+    # Zwischen den Perioden
+    for i in range(len(periods) - 1):
+        sub_start = periods[i][1]      # Ende der vorigen Stillstand-Phase
+        sub_end = periods[i + 1][0]    # Anfang der naechsten
+        if sub_end > sub_start:
+            boundaries.append((sub_start, sub_end, True, True))
+
+    # Nach letzter Periode (falls Range nicht damit endet)
+    if periods[-1][1] < f_max:
+        boundaries.append((periods[-1][1], f_max, True, False))
+
+    return [
+        {"start_frame": s, "end_frame": e,
+         "has_pre_stillness": pre, "has_post_stillness": post}
+        for (s, e, pre, post) in boundaries
+    ]
+
+
+def slice_tracks(tracks: dict, start_frame: int, end_frame: int) -> dict:
+    """Liefert ein neues tracks-Dict, beschnitten auf [start_frame..end_frame]
+    und mit re-normalisierten Indizes (Sub-Clip-Anfang = 0).
+    """
+    out = {}
+    for cls in BALL_CLASSES:
+        cls_data = tracks.get(cls, {})
+        out[cls] = {
+            (fi - start_frame): pos
+            for fi, pos in cls_data.items()
+            if start_frame <= fi <= end_frame
+        }
+    return out
+
+
 def track_bidirectional(clip_frames: list[bytes], pivot_idx: int,
                         pivot_assignment: dict, H: np.ndarray,
                         max_disp_px: float, setting: Setting,
@@ -668,14 +796,27 @@ def write_clip_outputs(clip_idx: int, tracks: dict, clip_frames: list[bytes],
     json_frames = []
     found_counts = {cls: 0 for cls in BALL_CLASSES}
 
-    # Anfangsposition pro Ball
-    start_positions = {}
+    # Anfangsposition pro Ball — Mittelwert ueber die ersten paar getrackten
+    # Frames (gegen Tracking-Noise). Bei Sub-Clips die mit einer Stillstands-
+    # Phase beginnen ist das die "Ruheposition vor dem Stoss"; bei anderen
+    # einfach die erste robuste Position.
+    start_positions: dict[str, tuple] = {}
+    AVG_N = 6  # mittele ueber die ersten 6 gefundenen Frames pro Ball
     for cls in BALL_CLASSES:
+        collected = []
+        first_idx = None
         for j in range(len(clip_frames)):
             pos = tracks[cls].get(j)
             if pos is not None:
-                start_positions[cls] = (pos, j)
-                break
+                if first_idx is None:
+                    first_idx = j
+                collected.append(pos)
+                if len(collected) >= AVG_N:
+                    break
+        if collected:
+            avg_x = sum(p[0] for p in collected) / len(collected)
+            avg_y = sum(p[1] for p in collected) / len(collected)
+            start_positions[cls] = ((avg_x, avg_y), first_idx)
 
     # Trail-Overlay im erweiterten Koordinatensystem
     trail_overlay = np.zeros((VIZ_OUT_H, VIZ_OUT_W, 3), dtype=np.uint8)
@@ -857,6 +998,15 @@ def write_track_preview(rectified: np.ndarray, clip_name: str,
 def track_video(video_path: str, setting: Setting, gs: GlobalSettings,
                 output_dir: Path, progress_cb=None) -> dict:
     """Trackt ein komplettes Video. Schreibt Clip-Files in output_dir.
+
+    Ablauf (Paket B):
+    1. Pass 1: scan_clip_ranges findet Tisch-sichtbare Bereiche
+    2. Pass 2 pro Range:
+       a) Frames laden, Pivot finden, bidirektional tracken
+       b) Stillstands-Phasen finden → Range in Sub-Clips zerlegen
+       c) Sub-Clips < min_clip_duration_s verwerfen
+    3. Alle ueberlebenden Sub-Clips durchnummerieren (1, 2, ...) und schreiben
+
     progress_cb(phase: str, current: int, total: int) wird aufgerufen.
     Returns: summary dict.
     """
@@ -880,6 +1030,7 @@ def track_video(video_path: str, setting: Setting, gs: GlobalSettings,
         "ranges_found": len(ranges),
         "clips": [],
         "skipped_ranges": [],
+        "discarded_subclips": [],   # zu kurze Sub-Clips landen hier
     }
 
     if not ranges:
@@ -890,15 +1041,17 @@ def track_video(video_path: str, setting: Setting, gs: GlobalSettings,
     max_disp_px = (gs.v_max_mps / max(fps, 1.0)) * PX_PER_M
     H = compute_homography(setting.table_corners)
 
-    # ---- Pass 2: Pro Bereich Pivot finden + tracken
-    for clip_idx, (start_f, end_f) in enumerate(ranges, start=1):
+    # ---- Pass 2: tracken + sub-clip-splitting, sammle alles zum Schreiben
+    pending_subclips: list[dict] = []  # noch nicht geschriebene Sub-Clips
+
+    for range_idx, (start_f, end_f) in enumerate(ranges, start=1):
         if progress_cb:
-            progress_cb("clip_load", clip_idx, len(ranges))
+            progress_cb("clip_load", range_idx, len(ranges))
 
         clip_frames = load_clip_frames(video_path, start_f, end_f)
 
         if progress_cb:
-            progress_cb("clip_pivot", clip_idx, len(ranges))
+            progress_cb("clip_pivot", range_idx, len(ranges))
 
         pivot_idx, pivot_assignment = find_pivot(clip_frames, fps, setting, gs)
 
@@ -907,19 +1060,16 @@ def track_video(video_path: str, setting: Setting, gs: GlobalSettings,
                 "range": [start_f, end_f],
                 "reason": "kein sauberer Pivot-Frame (3 Baelle nicht klar isolierbar)",
             })
-            # Preview-Update auch fuer skip
-            if preview_path.exists():
-                pass  # bleibt der letzte
             continue
 
         if progress_cb:
-            progress_cb("clip_track", clip_idx, len(ranges))
+            progress_cb("clip_track", range_idx, len(ranges))
 
         tracks = track_bidirectional(
             clip_frames, pivot_idx, pivot_assignment, H, max_disp_px, setting, gs
         )
 
-        # Preview vom Pivot mit erkannten Bällen
+        # Preview vom Pivot
         pivot_frame = decode_jpeg(clip_frames[pivot_idx])
         if pivot_frame is not None:
             rectified = rectify_frame(pivot_frame, H)
@@ -928,22 +1078,62 @@ def track_video(video_path: str, setting: Setting, gs: GlobalSettings,
                 for cls in BALL_CLASSES
             }
             write_track_preview(
-                rectified, f"clip{clip_idx:02d}", pivot_idx,
+                rectified, f"range{range_idx:02d}", pivot_idx,
                 len(clip_frames), balls_at_pivot,
-                len(summary["clips"]), preview_path
+                len(pending_subclips), preview_path
             )
 
-        if progress_cb:
-            progress_cb("clip_write", clip_idx, len(ranges))
+        # Sub-Clip-Splitting basierend auf Stillstands-Phasen
+        boundaries = split_tracks_into_subclips(tracks, fps, gs, len(clip_frames))
 
+        for sub in boundaries:
+            sub_start = sub["start_frame"]
+            sub_end = sub["end_frame"]
+            sub_n_frames = sub_end - sub_start + 1
+            duration_s = sub_n_frames / fps
+
+            if duration_s < gs.min_clip_duration_s:
+                summary["discarded_subclips"].append({
+                    "range_idx": range_idx,
+                    "frames_in_range": [sub_start, sub_end],
+                    "duration_s": round(duration_s, 2),
+                    "reason": f"< min_clip_duration_s ({gs.min_clip_duration_s}s)",
+                })
+                continue
+
+            # Pivot ggf. in dieses Sub-Clip-Fenster anpassen; falls Pivot ausserhalb
+            # liegt, einfach Mitte nehmen (kein Schaden — Pivot ist nur fuer
+            # Visualisierungs-Label im Clip-Video).
+            if sub_start <= pivot_idx <= sub_end:
+                sub_pivot_idx = pivot_idx - sub_start
+            else:
+                sub_pivot_idx = sub_n_frames // 2
+
+            pending_subclips.append({
+                "tracks": slice_tracks(tracks, sub_start, sub_end),
+                "frames": clip_frames[sub_start:sub_end + 1],
+                "start_frame_in_video": start_f + sub_start,
+                "pivot_idx": sub_pivot_idx,
+                "duration_s": duration_s,
+                "from_range": range_idx,
+                "has_pre_stillness": sub["has_pre_stillness"],
+                "has_post_stillness": sub["has_post_stillness"],
+            })
+
+    # ---- Schreiben mit finaler, durchgehender Nummerierung
+    for final_idx, sc in enumerate(pending_subclips, start=1):
+        if progress_cb:
+            progress_cb("clip_write", final_idx, len(pending_subclips))
         meta = write_clip_outputs(
-            clip_idx, tracks, clip_frames, H, fps, start_f,
-            pivot_idx, output_dir, setting
+            final_idx, sc["tracks"], sc["frames"], H, fps,
+            sc["start_frame_in_video"], sc["pivot_idx"], output_dir, setting
         )
+        meta["duration_s"] = round(sc["duration_s"], 2)
+        meta["from_range"] = sc["from_range"]
         summary["clips"].append(meta)
 
     if progress_cb:
-        progress_cb("done", len(ranges), len(ranges))
+        progress_cb("done", len(summary["clips"]), len(summary["clips"]))
     return summary
 
 

@@ -63,6 +63,12 @@ class GlobalSettings:
     max_color_drift_bgr: float = 60.0 # Bound: Tracking-Farbe darf nie weiter weg von Setup-Farbe
     max_ball_lost_frames: int = 5     # nach X verlorenen Frames wird Such-Radius nicht weiter vergrößert
 
+    # ---- Clip-Splitting / Stillstands-Detektion (Paket B) ----
+    min_clip_duration_s: float = 7.0       # Sub-Clips kürzer als das werden verworfen
+    stillness_max_window_px: float = 3.0   # Max Positions-Spannweite im Fenster damit "still"
+    stillness_window_frames: int = 10      # Fenster-Größe (frames) für Stillstands-Check
+    stillness_min_duration_s: float = 1.0  # Min Dauer um als Stillstands-Phase zu zählen
+
     def to_dict(self) -> dict:
         return asdict(self)
 
