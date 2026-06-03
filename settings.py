@@ -58,6 +58,7 @@ class GlobalSettings:
     init_min_felt_pct: float = 70.0   # min. Filz-Anteil im rektifizierten Bild für Pivot-Kandidat
     init_sample_interval_s: float = 1.0  # Pivot-Suche: alle X Sekunden ein Sample
     preview_interval: int = 15        # _preview.jpg alle X Frames updaten
+    scan_sample_interval_s: float = 5.0  # Pass 1: alle X Sekunden ein Frame pruefen (statt jeden)
     v_max_mps: float = 7.0            # max. Ballgeschwindigkeit für Tracking-Radius
     color_adaptation_rate: float = 0.2  # EMA-Alpha für Ball-Farbe (0 = keine Anpassung, 1 = nur letzte)
     max_color_drift_bgr: float = 60.0 # Bound: Tracking-Farbe darf nie weiter weg von Setup-Farbe

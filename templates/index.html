@@ -63,10 +63,26 @@
     <div class="section-header">
         <h2>archiv — lokal gefundene videos</h2>
     </div>
+
+    <!-- Live-Tracking-Panel: oberhalb der Liste, wird NICHT durch loadHistory zerstoert.
+         Wird vom statusPolling separat gefuellt. -->
+    <div id="live-tracking-panel" class="live-tracking-panel hidden">
+        <div class="ltp-header">
+            <strong id="ltp-title">tracking…</strong>
+            <span class="muted small" id="ltp-status"></span>
+        </div>
+        <div class="ltp-body">
+            <img id="ltp-preview" alt="" class="ltp-preview">
+            <div class="ltp-info">
+                <div id="ltp-phase" class="ltp-phase-line"></div>
+                <div id="ltp-progress" class="ltp-progress-line"></div>
+                <div id="ltp-ranges" class="ltp-ranges-line"></div>
+            </div>
+        </div>
+    </div>
+
     <div id="history-list" class="history-list"></div>
     <div class="muted" id="history-empty">noch nichts im archiv</div>
-
-    <div id="tracking-status-panel"></div>
 </section>
 
 <!-- ============= SETUP ============= -->
@@ -279,6 +295,10 @@
             <div class="param">
                 <label class="param-label">preview interval (frames)</label>
                 <input type="number" data-gparam="preview_interval" min="1" step="1">
+            </div>
+            <div class="param">
+                <label class="param-label">scan sample interval (s) <span class="param-help">pass 1: alle X sek einen frame pruefen</span></label>
+                <input type="number" data-gparam="scan_sample_interval_s" min="0.5" step="0.5">
             </div>
             <div class="param">
                 <label class="param-label">v_max (m/s) <span class="param-help">max ballgeschwindigkeit → such-radius</span></label>

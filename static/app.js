@@ -171,11 +171,14 @@ function renderVideos() {
         const durTxt = v.duration_s != null
             ? fmtDuration(v.duration_s)
             : (v.duration ? fmtDuration(v.duration) : "");
+        // title_en bevorzugen wenn das Video schon im Archiv ist und uebersetzt
+        // wurde — fuer konsistente Anzeige zwischen Browse/Queue/Archiv
+        const browseTitle = v.title_en || v.title;
         row.innerHTML = `
             <input type="checkbox" data-vid="${v.video_id}">
             <img class="video-thumb" src="${v.thumbnail}" alt="" data-yt-id="${v.video_id}">
             <div class="video-meta">
-                <div class="video-title">${escapeHtml(v.title)}${badges}</div>
+                <div class="video-title">${escapeHtml(browseTitle)}${badges}</div>
                 <div class="muted small">${v.video_id}${durTxt ? ` · ${durTxt}` : ""}</div>
             </div>
             <div class="video-actions">
@@ -220,7 +223,7 @@ async function openTrackModalForDownload(v) {
         return;
     }
     // Pre-fill modal-track als "download + track" mode
-    $("track-video-name").textContent = v.title;
+    $("track-video-name").textContent = v.title_en || v.title;
     $("modal-track").dataset.videoId = v.video_id;
     $("modal-track").dataset.mode = "download_track";
     $("modal-track").dataset.payload = JSON.stringify(v);
@@ -319,55 +322,108 @@ $("btn-clear-done").addEventListener("click", async () => {
 });
 
 function renderTrackingStatus(jobs) {
-    const panel = $("tracking-status-panel");
+    // Aktiver Job hat Vorrang. Wenn mehrere laufen, zeigen wir den ersten "running",
+    // sonst den ersten "done" der noch nicht weggeklickt wurde, sonst nichts.
     const entries = Object.entries(jobs);
-    if (entries.length === 0) {
-        panel.innerHTML = "";
+    const running = entries.find(([_, j]) => j.status === "running");
+    const focusEntry = running || entries.find(([_, j]) => j.status === "done")
+                                  || entries.find(([_, j]) => j.status === "error");
+
+    const panel = $("live-tracking-panel");
+    if (!focusEntry) {
+        panel.classList.add("hidden");
+        stopAllPreviewPolling();
         return;
     }
-    let html = '<div class="section-header"><h3>tracking-status</h3></div>';
-    entries.forEach(([vid, job]) => {
-        const v = state.historyVideos.find(x => x.video_id === vid);
-        const title = v ? v.title : vid;
-        let body = "";
-        if (job.status === "running") {
-            const pctText = job.total > 0 ? `${job.current}/${job.total}` : `${job.current}`;
-            body = `<span class="status-running">${job.phase} ${pctText}</span>`;
-            // Preview-Polling sicherstellen
-            ensurePreviewPolling(vid);
-        } else if (job.status === "done") {
-            body = `<span class="status-done">fertig: ${job.clips_found} clips aus ${job.ranges_found} tisch-bereichen</span>`;
-            stopPreviewPolling(vid);
-            if (job.skipped_ranges && job.skipped_ranges.length) {
-                body += `<div class="muted small">${job.skipped_ranges.length} bereiche uebersprungen (kein sauberer pivot)</div>`;
-            }
-        } else if (job.status === "error") {
-            body = `<span class="status-error">fehler: ${escapeHtml(job.error || "")}</span>`;
-            stopPreviewPolling(vid);
-        }
-        html += `<div class="tracking-row" data-vid="${vid}">
-            <div class="tracking-title">${escapeHtml(title)}</div>
-            <div class="tracking-body">${body}</div>
-        </div>`;
-    });
-    panel.innerHTML = html;
+    panel.classList.remove("hidden");
+
+    const [vid, job] = focusEntry;
+    const v = state.historyVideos.find(x => x.video_id === vid);
+    const title = v ? (v.title_en || v.title || vid) : vid;
+
+    $("ltp-title").textContent = title;
+
+    // Status-Zeile
+    const statusEl = $("ltp-status");
+    if (job.status === "running") {
+        statusEl.textContent = "läuft";
+        statusEl.className = "muted small status-running";
+    } else if (job.status === "done") {
+        statusEl.textContent = "fertig";
+        statusEl.className = "muted small status-done";
+    } else if (job.status === "error") {
+        statusEl.textContent = "fehler";
+        statusEl.className = "muted small status-error";
+    } else {
+        statusEl.textContent = job.status || "";
+        statusEl.className = "muted small";
+    }
+
+    // Phase
+    const phaseMap = {
+        "init": "vorbereiten",
+        "scan": "pass 1 — top-view-szenen suchen",
+        "clip_load": "frames laden",
+        "clip_pivot": "pivot-frame suchen",
+        "clip_track": "bälle tracken",
+        "clip_write": "clip schreiben",
+        "done": "abgeschlossen",
+    };
+    $("ltp-phase").textContent = phaseMap[job.phase] || job.phase || "";
+
+    // Progress
+    if (job.phase === "scan" && job.total > 0) {
+        const pct = Math.round((job.current / job.total) * 100);
+        $("ltp-progress").textContent = `${pct}% (frame ${job.current.toLocaleString()} / ${job.total.toLocaleString()})`;
+    } else if (job.total > 0) {
+        $("ltp-progress").textContent = `${job.current} / ${job.total}`;
+    } else {
+        $("ltp-progress").textContent = "";
+    }
+
+    // Ranges live
+    if (job.phase === "scan") {
+        const cnt = job.ranges_so_far_count ?? 0;
+        $("ltp-ranges").textContent = cnt > 0
+            ? `top-view-bereiche bisher: ${cnt}`
+            : "(noch keine top-view-bereiche gefunden)";
+    } else if (job.status === "done") {
+        $("ltp-ranges").textContent = `${job.clips_found ?? 0} clips aus ${job.ranges_found ?? 0} bereichen`;
+    } else if (job.status === "error") {
+        $("ltp-ranges").textContent = `${job.error || ""}`;
+    } else {
+        $("ltp-ranges").textContent = "";
+    }
+
+    // Live-Preview-Bild — dediziertes Polling auf nur DIESES img-Element
+    if (job.status === "running") {
+        ensureLivePreviewPolling(vid);
+    } else {
+        stopAllPreviewPolling();
+        // Bei done/error wenigstens noch einmal das aktuelle Bild zeigen
+        $("ltp-preview").src = `/api/preview/${vid}?t=${Date.now()}`;
+    }
 }
 
-function ensurePreviewPolling(vid) {
-    if (state.previewTimers[vid]) return;
-    state.previewTimers[vid] = setInterval(() => {
-        // Update preview img wenn vorhanden
-        const histRow = document.querySelector(`.history-row[data-vid="${vid}"] .history-preview`);
-        if (histRow) {
-            histRow.src = `/api/preview/${vid}?t=${Date.now()}`;
-        }
-    }, 1500);
+// Live-Preview-Polling — schreibt direkt auf das #ltp-preview img Element,
+// das nie zerstoert wird (nur sein src). Damit kein Race mit renderHistory.
+function ensureLivePreviewPolling(vid) {
+    if (state.previewTimers.__live && state.previewTimers.__liveVid === vid) return;
+    stopAllPreviewPolling();
+    state.previewTimers.__liveVid = vid;
+    const tick = () => {
+        const img = $("ltp-preview");
+        if (img) img.src = `/api/preview/${vid}?t=${Date.now()}`;
+    };
+    tick();   // sofort einmal
+    state.previewTimers.__live = setInterval(tick, 1500);
 }
 
-function stopPreviewPolling(vid) {
-    if (state.previewTimers[vid]) {
-        clearInterval(state.previewTimers[vid]);
-        delete state.previewTimers[vid];
+function stopAllPreviewPolling() {
+    if (state.previewTimers.__live) {
+        clearInterval(state.previewTimers.__live);
+        delete state.previewTimers.__live;
+        delete state.previewTimers.__liveVid;
     }
 }
 
@@ -407,12 +463,13 @@ function renderHistory() {
 
         const hasClips = v.clips && v.clips.length > 0;
         const clipsExpanded = state.expandedClipVids.has(v.video_id);
+        const displayTitle = v.title_en || v.title || v.video_id;
 
         row.innerHTML = `
             <img class="history-preview" src="/api/thumb/${v.video_id}?t=${Date.now()}"
                  data-vid="${v.video_id}" onerror="this.style.display='none'">
             <div class="history-info">
-                <div class="history-title">${escapeHtml(v.title || v.video_id)}</div>
+                <div class="history-title">${escapeHtml(displayTitle)}</div>
                 <div class="muted small">${v.video_id} · ${v.date || "?"} · ${escapeHtml(v.channel || "")}</div>
                 <div class="history-meta-extras">
                     <span>dauer: ${durTxt}</span>
@@ -504,7 +561,7 @@ async function playArchiveVideo(v) {
         alert("keine video-datei gefunden");
         return;
     }
-    playArchiveFile(v.video_id, vfile.name, v.title || v.video_id);
+    playArchiveFile(v.video_id, vfile.name, v.title_en || v.title || v.video_id);
 }
 
 function playArchiveFile(vid, filename, title) {
@@ -579,7 +636,7 @@ $("btn-rescan").addEventListener("click", async () => {
 function openTrackModal(vid) {
     const v = state.historyVideos.find(x => x.video_id === vid);
     if (!v) return;
-    $("track-video-name").textContent = v.title || vid;
+    $("track-video-name").textContent = v.title_en || v.title || vid;
     $("modal-track").dataset.videoId = vid;
     $("modal-track").dataset.mode = "track_only";
     delete $("modal-track").dataset.payload;
@@ -841,7 +898,7 @@ async function loadHistoryForSetupSelect() {
     state.historyVideos.forEach(v => {
         const opt = document.createElement("option");
         opt.value = v.video_id;
-        opt.textContent = `${v.title || v.video_id}`;
+        opt.textContent = `${v.title_en || v.title || v.video_id}`;
         sel.appendChild(opt);
     });
 }

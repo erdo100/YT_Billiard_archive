@@ -659,8 +659,13 @@ def track_bidirectional(clip_frames: list[bytes], pivot_idx: int,
 def scan_clip_ranges(video_path: str, setting: Setting, gs: GlobalSettings,
                      preview_path: Path | None = None,
                      progress_cb=None) -> tuple[list[tuple[int, int]], float, int]:
-    """Streaming-Scan: identifiziere zusammenhaengende Frame-Bereiche mit
-    sichtbarem Tisch. Schreibt optional Preview-JPGs zwischendurch.
+    """Pass 1 — sparse Sampling: alle `scan_sample_interval_s` Sekunden ein
+    Frame pruefen, ob der Tisch sichtbar ist. Daraus zusammenhaengende
+    Bereiche bilden (Single-Sample-Luecken werden toleriert).
+
+    progress_cb wird mit ("scan", current_frame, total_frames, ranges_so_far) aufgerufen,
+    sodass die UI live die bisher gefundenen Bereiche anzeigen kann.
+
     Returns: (ranges, fps, total_frames)
     """
     cap = cv2.VideoCapture(video_path)
@@ -670,48 +675,71 @@ def scan_clip_ranges(video_path: str, setting: Setting, gs: GlobalSettings,
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    visible_frames = []
-    frame_idx = 0
+    sample_interval_s = max(0.5, float(gs.scan_sample_interval_s or 5.0))
+    sample_step = max(1, int(round(sample_interval_s * fps)))
 
-    while True:
+    samples: list[tuple[int, bool]] = []   # (frame_idx, visible)
+
+    # Range-Tracking waehrend des Scans (live fuer progress_cb)
+    live_ranges: list[tuple[int, int]] = []
+    in_run = False
+    run_start_f = 0
+    last_visible_f = 0
+    consecutive_invisible_after_visible = 0   # fuer Single-Sample-Glue
+
+    sample_idx = 0
+    total_samples = max(1, total // sample_step)
+    for f_idx in range(0, total, sample_step):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, f_idx)
         ret, frame = cap.read()
         if not ret:
             break
 
         visible, pct = is_table_visible(frame, setting, gs.felt_detect_pct)
+        samples.append((f_idx, visible))
+
+        # Online Range-Building mit 1-Sample-Glue
         if visible:
-            visible_frames.append(frame_idx)
+            if not in_run:
+                in_run = True
+                run_start_f = f_idx
+            last_visible_f = f_idx
+            consecutive_invisible_after_visible = 0
+        else:
+            if in_run:
+                consecutive_invisible_after_visible += 1
+                if consecutive_invisible_after_visible >= 2:
+                    # Definitiver Bruch (zwei aufeinanderfolgende invisible Samples)
+                    in_run = False
+                    duration_frames = last_visible_f - run_start_f + 1
+                    duration_s = duration_frames / fps
+                    if duration_s >= gs.min_clip_duration_s * 0.3:
+                        # Pass 1 ist locker — Min-Dauer wird in Pass 2 nochmal
+                        # streng angewandt (auf Sub-Clip-Ebene)
+                        live_ranges.append((run_start_f, last_visible_f))
 
-        if preview_path and frame_idx % gs.preview_interval == 0:
-            write_scan_preview(frame, setting, frame_idx, total,
-                               len(visible_frames), pct, preview_path)
+        # Preview-Bild aktualisieren
+        if preview_path:
+            write_scan_preview(frame, setting, f_idx, total,
+                               sum(1 for s in samples if s[1]), pct, preview_path)
 
-        if progress_cb and frame_idx % 30 == 0:
-            progress_cb("scan", frame_idx, total)
+        if progress_cb:
+            progress_cb("scan", f_idx, total, list(live_ranges))
 
-        frame_idx += 1
+        sample_idx += 1
+
+    # Letzten offenen Run abschliessen
+    if in_run:
+        duration_s = (last_visible_f - run_start_f + 1) / fps
+        if duration_s >= gs.min_clip_duration_s * 0.3:
+            live_ranges.append((run_start_f, last_visible_f))
 
     cap.release()
 
-    if not visible_frames:
-        return [], fps, total
+    if progress_cb:
+        progress_cb("scan", total, total, list(live_ranges))
 
-    # Gruppiere
-    ranges = []
-    rs = visible_frames[0]
-    re = visible_frames[0]
-    for f in visible_frames[1:]:
-        if f - re <= gs.max_gap_frames:
-            re = f
-        else:
-            ranges.append((rs, re))
-            rs = f
-            re = f
-    ranges.append((rs, re))
-
-    # Filter: nur Bereiche mit min Frames
-    ranges = [r for r in ranges if (r[1] - r[0] + 1) >= gs.min_clip_frames]
-    return ranges, fps, total
+    return live_ranges, fps, total
 
 
 # ---- Frame-Memory --------------------------------------------------------

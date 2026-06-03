@@ -582,12 +582,15 @@ def run_tracking(video_id: str, setting_id: str):
             "clips_found": 0, "ranges_found": 0,
         }
 
-    def progress(phase: str, current: int, total: int):
+    def progress(phase: str, current: int, total: int, ranges_so_far=None):
         with status_lock:
             job = tracking_jobs.get(video_id, {})
             job["phase"] = phase
             job["current"] = current
             job["total"] = total
+            if ranges_so_far is not None:
+                job["ranges_so_far"] = ranges_so_far
+                job["ranges_so_far_count"] = len(ranges_so_far)
             tracking_jobs[video_id] = job
 
     try:
@@ -691,13 +694,15 @@ def api_video_info():
             "thumbnail": f"https://i.ytimg.com/vi/{vid}/mqdefault.jpg",
         }
         with db_conn() as c:
-            row = c.execute("""SELECT duration_s, clips_count, last_tracked_at
+            row = c.execute("""SELECT title_en, duration_s, clips_count, last_tracked_at
                                FROM videos WHERE video_id = ?""", (vid,)).fetchone()
         if row:
             out["in_archive"] = True
             out["duration_s"] = row["duration_s"]
             out["clips_count"] = row["clips_count"]
             out["last_tracked_at"] = row["last_tracked_at"]
+            if row["title_en"]:
+                out["title_en"] = row["title_en"]
         else:
             out["in_archive"] = False
         return jsonify({"video": out})
@@ -730,7 +735,8 @@ def api_channel():
             placeholders = ",".join("?" * len(vid_list))
             with db_conn() as c:
                 rows = c.execute(f"""
-                    SELECT video_id, duration_s, clips_count, last_tracked_at, folder
+                    SELECT video_id, title, title_en, duration_s, clips_count,
+                           last_tracked_at, folder
                     FROM videos WHERE video_id IN ({placeholders})
                 """, vid_list).fetchall()
             archived = {r["video_id"]: dict(r) for r in rows}
@@ -741,6 +747,10 @@ def api_channel():
                     v["duration_s"] = m.get("duration_s")
                     v["clips_count"] = m.get("clips_count")
                     v["last_tracked_at"] = m.get("last_tracked_at")
+                    # Englischer Titel falls vorhanden — fuer konsistente
+                    # Anzeige zwischen Browse/Queue/Archiv
+                    if m.get("title_en"):
+                        v["title_en"] = m["title_en"]
                 else:
                     v["in_archive"] = False
 
@@ -765,9 +775,11 @@ def api_download():
             # Bereits in Queue?
             if any(q["video_id"] == v["video_id"] for q in download_queue):
                 continue
+            # title_en bevorzugen damit Queue & Archiv die gleiche Sprache zeigen
+            display_title = v.get("title_en") or v.get("title") or v["video_id"]
             download_queue.append({
                 "video_id": v["video_id"],
-                "title": v.get("title") or v["video_id"],
+                "title": display_title,
                 "url": v.get("url") or f"https://youtu.be/{v['video_id']}",
                 "status": "queued",
                 "progress": 0.0,
