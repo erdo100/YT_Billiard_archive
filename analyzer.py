@@ -35,6 +35,32 @@ BALL_RADIUS_PX = max(1, int(BALL_RADIUS_MM * SCALE))   # 15
 # Bild (1 px ≈ 2 mm).
 BORDER_INSET_PX = 8
 
+# Visualisierungs-Rand fuer Clip-Output: zusaetzliche 20 cm in jede Richtung
+# um den Tischrahmen / die Markierungen sichtbar zu machen. Wirkt sich NUR auf
+# den gespeicherten Clip aus (Visualisierung), NICHT auf das Tracking selbst.
+BORDER_VIZ_MM = 200                                   # 20 cm
+BORDER_VIZ_PX = int(BORDER_VIZ_MM * SCALE)            # 100 px
+VIZ_OUT_W = OUT_W + 2 * BORDER_VIZ_PX                 # 1620
+VIZ_OUT_H = OUT_H + 2 * BORDER_VIZ_PX                 # 910
+
+
+def rectify_frame_extended(frame: np.ndarray, H: np.ndarray) -> np.ndarray:
+    """Wie rectify_frame, aber mit BORDER_VIZ_PX zusaetzlichem Rand drumherum.
+    Spielfeld-Inneres landet bei [BORDER_VIZ_PX, BORDER_VIZ_PX+OUT_W] horizontal
+    und [BORDER_VIZ_PX, BORDER_VIZ_PX+OUT_H] vertikal. Der Aussenrand zeigt
+    den Tischrahmen / die Bande aus dem Originalbild (falls dort sichtbar).
+    """
+    T = np.array([[1.0, 0.0, BORDER_VIZ_PX],
+                  [0.0, 1.0, BORDER_VIZ_PX],
+                  [0.0, 0.0, 1.0]], dtype=np.float32)
+    H_ext = T @ H
+    return cv2.warpPerspective(frame, H_ext, (VIZ_OUT_W, VIZ_OUT_H))
+
+
+def _viz_pt(pos) -> tuple[int, int]:
+    """Tracking-Koord (OUT_W x OUT_H) → Visualisierungs-Koord (VIZ_OUT_W x VIZ_OUT_H)."""
+    return (int(pos[0]) + BORDER_VIZ_PX, int(pos[1]) + BORDER_VIZ_PX)
+
 # Ball-Klassen in fester Reihenfolge (Index entspricht setting.ball_colors_hex[i])
 BALL_CLASSES = ["weiss", "gelb", "rot"]
 
@@ -619,19 +645,16 @@ def write_clip_outputs(clip_idx: int, tracks: dict, clip_frames: list[bytes],
                        H: np.ndarray, fps: float, start_frame_in_video: int,
                        pivot_idx: int, output_dir: Path, setting: Setting
                        ) -> dict:
-    """Schreibt clipNN.mp4 (rektifiziert + durchgaengige Trail-Linie pro Ball +
-    Marker), clipNN.json, und clipNN_thumb.jpg (Frame 0.5s vor Ende mit
-    komplettem Trail-Overlay drauf).
+    """Schreibt clipNN.mp4, clipNN.json, clipNN_thumb.jpg.
 
-    Trail-Eigenschaften:
-    - Durchgaengige Linie pro Ballfarbe, ueberspannt auch Luecken im Tracking
-      (Lost-Frames zwischen zwei gefundenen Frames werden direkt verbunden)
-    - Gefuellter Kreis an der Anfangsposition jedes Balls — markiert wo die
-      Bewegung losging
-    - Aktueller Ball-Marker als hohler Kreis
+    Visualisierung im Clip:
+    - Erweiterte Rektifizierung mit 20 cm Rand → Tischbande/Markierungen sichtbar
+    - Gefuellter Kreis pro Ball an der Anfangsposition (Bewegungsstart)
+    - Durchgaengige Linie in Ballfarbe, ueberbrueckt Tracking-Luecken
+    - KEIN Marker an der aktuellen Ball-Position (User-Wunsch — nur Start + Linie)
 
-    Nach OpenCV-mp4v-Encoding folgt ffmpeg-Konvertierung zu H.264 fuer
-    Browser-Wiedergabe.
+    Tracking-Koordinaten in JSON bleiben unveraendert im OUT_W x OUT_H-System;
+    nur das gerenderte Bild ist groesser.
     """
     clip_name = f"clip{clip_idx:02d}"
     tmp_mp4 = output_dir / f"{clip_name}_raw.mp4"
@@ -640,12 +663,12 @@ def write_clip_outputs(clip_idx: int, tracks: dict, clip_frames: list[bytes],
     thumb_path = output_dir / f"{clip_name}_thumb.jpg"
 
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer = cv2.VideoWriter(str(tmp_mp4), fourcc, fps, (OUT_W, OUT_H))
+    writer = cv2.VideoWriter(str(tmp_mp4), fourcc, fps, (VIZ_OUT_W, VIZ_OUT_H))
 
     json_frames = []
     found_counts = {cls: 0 for cls in BALL_CLASSES}
 
-    # Pre-pass: erste gefundene Position pro Ball — der Bewegungsstart
+    # Anfangsposition pro Ball
     start_positions = {}
     for cls in BALL_CLASSES:
         for j in range(len(clip_frames)):
@@ -654,67 +677,59 @@ def write_clip_outputs(clip_idx: int, tracks: dict, clip_frames: list[bytes],
                 start_positions[cls] = (pos, j)
                 break
 
-    # Trail-Overlay: wird ueber alle Frames hinweg aufgebaut.
-    # last_pos_per_ball merkt sich die letzte BEKANNTE Position auch ueber
-    # Luecken hinweg, sodass Lost-Phases automatisch ueberbrueckt werden.
-    trail_overlay = np.zeros((OUT_H, OUT_W, 3), dtype=np.uint8)
-    trail_mask = np.zeros((OUT_H, OUT_W), dtype=np.uint8)
+    # Trail-Overlay im erweiterten Koordinatensystem
+    trail_overlay = np.zeros((VIZ_OUT_H, VIZ_OUT_W, 3), dtype=np.uint8)
+    trail_mask = np.zeros((VIZ_OUT_H, VIZ_OUT_W), dtype=np.uint8)
     last_pos_per_ball = {cls: None for cls in BALL_CLASSES}
 
     for i in range(len(clip_frames)):
         frame = decode_jpeg(clip_frames[i])
         if frame is None:
             continue
-        rectified = rectify_frame(frame, H)
+        rectified = rectify_frame_extended(frame, H)
 
-        # Trail-Segment fuer diesen Frame hinzufuegen — Luecken werden ueber-
-        # brueckt: wenn der Ball in Frame i-1 verloren war aber davor zuletzt
-        # bei P bekannt war, wird Linie P→curr gezogen.
+        # Trail-Segment hinzufuegen (ueberbrueckt Luecken)
         for cls in BALL_CLASSES:
             curr = tracks[cls].get(i)
             if curr is None:
                 continue
             if last_pos_per_ball[cls] is not None:
-                p0 = (int(last_pos_per_ball[cls][0]), int(last_pos_per_ball[cls][1]))
-                p1 = (int(curr[0]), int(curr[1]))
+                p0 = _viz_pt(last_pos_per_ball[cls])
+                p1 = _viz_pt(curr)
                 if p0 != p1:
                     cv2.line(trail_overlay, p0, p1, VIZ_COLORS[cls], 3, cv2.LINE_AA)
                     cv2.line(trail_mask, p0, p1, 255, 3, cv2.LINE_AA)
             last_pos_per_ball[cls] = curr
 
-        # Trail-Overlay einblenden
         if trail_mask.any():
             mask_bool = trail_mask > 0
             rectified[mask_bool] = trail_overlay[mask_bool]
 
-        # Anfangsposition pro Ball: gefuellter Kreis mit dunkler Outline
-        # (nach dem Trail gezeichnet → bleibt obenauf sichtbar)
+        # Anfangsposition: gefuellter Kreis mit dunkler Outline (immer obenauf)
         for cls in BALL_CLASSES:
             sp = start_positions.get(cls)
             if sp is None or i < sp[1]:
                 continue
-            sx, sy = int(sp[0][0]), int(sp[0][1])
-            cv2.circle(rectified, (sx, sy), BALL_RADIUS_PX, VIZ_COLORS[cls], -1)
-            cv2.circle(rectified, (sx, sy), BALL_RADIUS_PX, (0, 0, 0), 1)
+            cx, cy = _viz_pt(sp[0])
+            cv2.circle(rectified, (cx, cy), BALL_RADIUS_PX, VIZ_COLORS[cls], -1)
+            cv2.circle(rectified, (cx, cy), BALL_RADIUS_PX, (0, 0, 0), 1)
 
-        # Aktueller Ball-Marker (hohl)
+        # JSON-Daten + found-Count (KEIN visueller Marker fuer aktuelle Position)
         balls_in_frame = {}
         for cls in BALL_CLASSES:
             pos = tracks[cls].get(i)
             if pos is None:
                 balls_in_frame[cls] = None
                 continue
-            cv2.circle(rectified, (int(pos[0]), int(pos[1])), BALL_RADIUS_PX,
-                       VIZ_COLORS[cls], 2)
             balls_in_frame[cls] = [round(pos[0], 1), round(pos[1], 1)]
             found_counts[cls] += 1
 
-        # Frame-Label
+        # Frame-Label unten links
         is_pivot = (i == pivot_idx)
         label = f"{clip_name}  f={i}/{len(clip_frames)-1}"
         if is_pivot:
             label += "  [PIVOT]"
-        cv2.putText(rectified, label, (10, OUT_H - 10),
+        cv2.putText(rectified, label, (10, VIZ_OUT_H - 10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
 
         writer.write(rectified)
@@ -728,12 +743,12 @@ def write_clip_outputs(clip_idx: int, tracks: dict, clip_frames: list[bytes],
 
     writer.release()
 
-    # Thumbnail: Frame 0.5s vor Ende, MIT komplett aufgebautem Trail.
+    # Thumbnail: Frame 0.5s vor Ende mit komplettem Trail
     if json_frames:
         thumb_src_idx = max(0, len(clip_frames) - int(round(0.5 * fps)) - 1)
         thumb_src = decode_jpeg(clip_frames[thumb_src_idx])
         if thumb_src is not None:
-            thumb_rect = rectify_frame(thumb_src, H)
+            thumb_rect = rectify_frame_extended(thumb_src, H)
             if trail_mask.any():
                 mb = trail_mask > 0
                 thumb_rect[mb] = trail_overlay[mb]
@@ -741,17 +756,13 @@ def write_clip_outputs(clip_idx: int, tracks: dict, clip_frames: list[bytes],
                 sp = start_positions.get(cls)
                 if sp is None:
                     continue
-                sx, sy = int(sp[0][0]), int(sp[0][1])
-                cv2.circle(thumb_rect, (sx, sy), BALL_RADIUS_PX, VIZ_COLORS[cls], -1)
-                cv2.circle(thumb_rect, (sx, sy), BALL_RADIUS_PX, (0, 0, 0), 1)
-            for cls in BALL_CLASSES:
-                pos = tracks[cls].get(thumb_src_idx)
-                if pos:
-                    cv2.circle(thumb_rect, (int(pos[0]), int(pos[1])),
-                               BALL_RADIUS_PX, VIZ_COLORS[cls], 2)
+                cx, cy = _viz_pt(sp[0])
+                cv2.circle(thumb_rect, (cx, cy), BALL_RADIUS_PX, VIZ_COLORS[cls], -1)
+                cv2.circle(thumb_rect, (cx, cy), BALL_RADIUS_PX, (0, 0, 0), 1)
+            # Kein aktueller-Ball-Marker im Thumbnail (User-Wunsch)
             cv2.imwrite(str(thumb_path), thumb_rect, [cv2.IMWRITE_JPEG_QUALITY, 82])
 
-    # H.264-Konvertierung fuer Browser
+    # H.264-Konvertierung
     if _convert_to_h264(str(tmp_mp4), str(final_mp4)):
         try:
             tmp_mp4.unlink()
