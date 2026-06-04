@@ -1,9 +1,3 @@
-[Uploading clip04.json…]()
-
-
-https://github.com/user-attachments/assets/b80266b8-eea7-4026-8852-41a9d296691c
-
-<img width="1620" height="910" alt="clip04_thumb" src="https://github.com/user-attachments/assets/8f4c1455-c0a4-4847-8d8b-5072c8135e37" />
 # YT Billiard Archive
 
 Local web app for YouTube download and carambol billiard tracking. Runs on
@@ -172,3 +166,11 @@ max_ball_lost_frames      | 5       | After X lost frames, the search radius is 
 Earlier versions had quickscan, auto-profile matching, auto-table detection,
 auto-tune, skip-resolve. All removed. Current workflow is:
 4 clicks for the table, 3 clicks for the balls, save once – done.
+
+
+## Sample picture, video, output file[clip04.json](https://github.com/user-attachments/files/28596402/clip04.json)
+
+https://github.com/user-attachments/assets/b80266b8-eea7-4026-8852-41a9d296691c
+
+<img width="1620" height="910" alt="clip04_thumb" src="https://github.com/user-attachments/assets/8f4c1455-c0a4-4847-8d8b-5072c8135e37" />
+
