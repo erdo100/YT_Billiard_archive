@@ -168,7 +168,9 @@ auto-tune, skip-resolve. All removed. Current workflow is:
 4 clicks for the table, 3 clicks for the balls, save once – done.
 
 
-## Sample picture, video, output file[clip04.json](https://github.com/user-attachments/files/28596402/clip04.json)
+## Sample picture, video, output file
+
+[clip04.json](https://github.com/user-attachments/files/28596402/clip04.json)
 
 https://github.com/user-attachments/assets/b80266b8-eea7-4026-8852-41a9d296691c
 
